@@ -1,0 +1,11 @@
+wxbot
+Copyright 2026 lkyxuan
+
+本项目部分设计与代码改编自 SiverWXbot_plus：
+  https://github.com/SiverKing/SiverWXbot_plus
+  作者：Siver，许可证：Apache License 2.0（全文见 LICENSES/SiverWXbot_plus-Apache-2.0.txt）
+
+改编自该项目的文件在文件头注明了来源，且均已修改。
+
+本项目运行时依赖 wxautox4（作者 Cluic），该库为闭源商业软件，
+不随本仓库分发，使用者需自行安装并购买授权。

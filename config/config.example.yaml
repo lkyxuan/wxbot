@@ -1,0 +1,43 @@
+# 复制为 config/config.yaml 后修改。${VAR} 会从环境变量 / .env 读取。
+
+# 管理员会话：在这个窗口里发 / 开头的命令可以管理机器人
+admin_chat: 文件传输助手
+
+# 白名单：只监听这些私聊和群
+listen:
+  users: []        # 例如 ["张三"]
+  groups: []       # 例如 ["测试群"]
+
+ai:
+  default: deepseek
+  providers:
+    deepseek:
+      type: openai_compat
+      api_key: ${OPENAI_API_KEY}
+      base_url: ${OPENAI_BASE_URL}
+      model: deepseek-chat
+  default_prompt: 默认       # 对应 config/prompts/默认.md
+  prompt_by_chat: {}         # 例如 {"测试群": "客服"}
+  error_reply: 在忙，我稍后回复您
+
+group:
+  reply_only_when_at: true   # 群里只有 @ 机器人时才 AI 回复
+  at_sender: true            # 回复时 @ 发言人
+
+keyword_reply:
+  enabled: true
+  rules: {}                  # 例如 {"价格": "请查看置顶公告"}
+
+memory:
+  enabled: true
+  dir: data/memory
+  max_count: 3000            # 每个会话最多保存条数
+  context_count: 20          # 调用 AI 时带入的最近条数
+
+reply_delay:
+  enabled: true
+  min_seconds: 1
+  max_seconds: 5
+
+notify:
+  webhook_url: ""            # 飞书/钉钉/企业微信机器人等，留空则不发
