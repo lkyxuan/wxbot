@@ -1580,6 +1580,9 @@ def activate():
 @app.route('/check_update')
 @login_required
 def check_update():
+    # 本地加固：关闭在线检查更新（原实现会把 MAC 地址放进 User-Agent 发给作者服务器）
+    if os.environ.get('SIVER_ALLOW_UPDATE_CHECK') != '1':
+        return jsonify({'status': 'error', 'message': '已在本机关闭在线检查更新'})
     try:
         import requests as req
         import wxbot_core as wxbot_mod
@@ -2194,7 +2197,8 @@ def main():
             siver_panel_manager.set_local_port_provider(get_panel_server_port)
             siver_panel_manager.start()
         # 启动服务器
-        app.run(host='0.0.0.0', port=free_port, debug=False, threaded=True)
+        # 本地加固：默认只监听本机；由启动脚本通过 SIVER_HOST 指定（如 Tailscale IP）
+        app.run(host=os.environ.get('SIVER_HOST', '127.0.0.1'), port=free_port, debug=False, threaded=True)
     except Exception as e:
         log('ERROR', f'服务器启动失败: {str(e)}')
     finally:
