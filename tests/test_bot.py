@@ -81,3 +81,26 @@ def test_long_reply_is_segmented(tmp_path):
 def test_storage_key_distinguishes_illegal_chars():
     assert storage_key("群1|群2") != storage_key("群1群2")
     assert storage_key("A:B").startswith("AB~")
+
+
+def test_same_chat_messages_are_serialized(tmp_path):
+    import threading
+    import time
+
+    _, driver, ai = make_bot(tmp_path)
+    original = ai.chat
+
+    def slow_chat(message, prompt="", history=None, image_path=""):
+        time.sleep(0.05)
+        return original(message, prompt, history, image_path)
+
+    ai.chat = slow_chat
+    threads = [threading.Thread(target=driver.push, args=(msg("张三", f"消息{i}"),)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    first, second = ai.calls
+    # 第二条处理时，历史里应完整包含第一条及其回复，且不含自身
+    assert [t.content for t in second[1]] == [first[0], f"AI:{first[0]}"]
+    assert first[1] == []

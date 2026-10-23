@@ -90,13 +90,14 @@ class WxAutoX4Driver(WeChatDriver):
         with self._lock:
             self._wx.RemoveListenChat(nickname=chat)
 
+    # exact=True：按会话名精确匹配，避免名字相近的联系人/群收到别人的回复
     def send_text(self, chat, text, at=None) -> SendResult:
         with self._lock:
-            return _to_result(self._wx.SendMsg(msg=text, who=chat, at=at))
+            return _to_result(self._wx.SendMsg(msg=text, who=chat, at=at, exact=True))
 
     def send_file(self, chat, path) -> SendResult:
         with self._lock:
-            return _to_result(self._wx.SendFiles(filepath=path, who=chat))
+            return _to_result(self._wx.SendFiles(filepath=path, who=chat, exact=True))
 
     def stop(self) -> None:
         with self._lock:

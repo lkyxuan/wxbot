@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 from datetime import datetime
 
@@ -38,6 +39,10 @@ class Bot:
         self.started_at: datetime | None = None
         self.received = 0
         self._sleep = sleep
+        # wxautox4 的监听回调在线程池里并发执行；同一会话的消息必须串行处理，
+        # 否则“写入记忆 → 取历史 → 回复”会与同会话的下一条消息交错，AI 上下文错乱
+        self._chat_locks: dict[str, threading.Lock] = {}
+        self._chat_locks_guard = threading.Lock()
 
     # ---- 生命周期 ----
     def start(self) -> None:
@@ -65,7 +70,15 @@ class Bot:
             self.stop()
 
     # ---- 消息 ----
+    def _chat_lock(self, chat: str) -> threading.Lock:
+        with self._chat_locks_guard:
+            return self._chat_locks.setdefault(chat, threading.Lock())
+
     def on_message(self, msg: IncomingMessage) -> None:
+        with self._chat_lock(msg.chat):
+            self._handle(msg)
+
+    def _handle(self, msg: IncomingMessage) -> None:
         log.info("[%s] %s(%s): %s", msg.chat, msg.sender, msg.attr.value, msg.content)
         if msg.attr == MessageAttr.FRIEND:
             self.received += 1
