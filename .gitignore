@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# 本地运行数据，不提交
+.env
+config/config.yaml
+data/
+logs/
+wxautox_logs/
+wxauto文件/
