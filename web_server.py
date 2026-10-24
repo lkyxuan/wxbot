@@ -2188,9 +2188,10 @@ def main():
         global panel_server_port
         free_port = find_free_port(10001, 11000)
         panel_server_port = free_port
-        log('INFO', f'请访问 http://localhost:{free_port} 或者 http://127.0.0.1:{free_port} 进行登录')
+        panel_host = os.environ.get('SIVER_HOST', '127.0.0.1')
+        log('INFO', f'请访问 http://{panel_host}:{free_port} 进行登录')
         # 启动后自动打开浏览器
-        webbrowser.open(f"http://127.0.0.1:{free_port}")
+        webbrowser.open(f"http://{panel_host}:{free_port}")
         # 定时启停
         time_start_stop()
         if siver_panel_manager is not None:
