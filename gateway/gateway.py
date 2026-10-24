@@ -30,7 +30,7 @@ import time
 import uuid
 from contextlib import AsyncExitStack
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, abort, jsonify, redirect, request, send_from_directory
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import OpenAI
@@ -242,9 +242,40 @@ class AgentRunner:
 def create_app(cfg, runner):
     app = Flask(__name__)
     api_keys = [k for k in cfg.get("api_keys", []) if k]
+    # 公开的静态页面（例如美食网页地图）：{URL 前缀: [目录, ...]}，按顺序找到第一个存在的文件。
+    # 这些路径不需要 Key，只放可以公开的内容。
+    public = {
+        "/" + prefix.strip("/"): [os.path.join(BASE_DIR, d) for d in (dirs if isinstance(dirs, list) else [dirs])]
+        for prefix, dirs in cfg.get("public", {}).items()
+    }
+
+    def public_match(path):
+        for prefix in sorted(public, key=len, reverse=True):
+            if path == prefix or path.startswith(prefix + "/"):
+                return prefix
+        return None
+
+    @app.get("/<path:path>")
+    def serve_public(path):
+        path = "/" + path
+        prefix = public_match(path)
+        if prefix is None:
+            abort(404)
+        if path == prefix:
+            # 页面里用相对路径引用 leaflet/、data.json，必须带结尾斜杠
+            return redirect(request.full_path.replace(prefix, prefix + "/", 1).rstrip("?"))
+        rel = path[len(prefix):].lstrip("/") or "index.html"
+        for d in public[prefix]:
+            if os.path.isfile(os.path.join(d, rel)):
+                resp = send_from_directory(d, rel)  # send_from_directory 会拒绝 ../ 越界
+                resp.headers["Cache-Control"] = "no-cache"
+                return resp
+        abort(404)
 
     @app.before_request
     def check_auth():
+        if public_match(request.path) is not None and request.method == "GET":
+            return None
         if not api_keys:
             return None
         token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()

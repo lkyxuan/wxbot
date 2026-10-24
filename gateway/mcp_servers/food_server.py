@@ -19,6 +19,7 @@
 单独运行（调试用）：python food_server.py
 """
 
+import json
 import math
 import os
 import re
@@ -39,6 +40,9 @@ DB_PATH = os.environ.get(
 # 高德 POI ID：B0 开头的 10 位字母数字
 # 静态地图、店铺照片的本地存放目录；机器人配置 ai_reply_image_dirs 要包含它
 IMAGE_DIR = os.environ.get("FOOD_IMAGE_DIR", os.path.join(os.path.dirname(DB_PATH), "images"))
+
+# 网页地图读取的数据文件（网关把 /food-map 映射到这个目录，见 config.example.json）
+MAP_DATA_DIR = os.environ.get("FOOD_MAP_DATA_DIR", os.path.join(os.path.dirname(DB_PATH), "map"))
 
 POI_ID_RE = re.compile(r"\bB0[0-9A-Z]{8}\b")
 URL_RE = re.compile(r"https?://[^\s<>\"'，。]+")
@@ -76,6 +80,18 @@ def _db():
         )
     """)
     return conn
+
+
+def _export_map_data():
+    """把收录的店写成网页地图用的 data.json；每次增删后调用。只导出展示需要的字段。"""
+    fields = ("id", "name", "city", "district", "address", "lng", "lat", "category", "rating", "cost", "note", "added_by")
+    with _db() as conn:
+        rows = conn.execute(f"SELECT {', '.join(fields)} FROM places ORDER BY created_at DESC").fetchall()
+    os.makedirs(MAP_DATA_DIR, exist_ok=True)
+    tmp = os.path.join(MAP_DATA_DIR, "data.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"updated_at": int(time.time()), "places": [dict(r) for r in rows]}, f, ensure_ascii=False)
+    os.replace(tmp, os.path.join(MAP_DATA_DIR, "data.json"))
 
 
 def _place_line(row):
@@ -236,6 +252,8 @@ def save_place(poi_id: str, note: str = "", added_by: str = "", source: str = ""
                 (note, added_by, existing["id"]),
             )
             row = conn.execute("SELECT * FROM places WHERE id = ?", (existing["id"],)).fetchone()
+        if existing:
+            _export_map_data()
             return "这家店已经在美食地图里了，已更新备注：\n" + _place_line(row)
         cur = conn.execute(
             """INSERT INTO places (poi_id, name, city, district, address, lng, lat, category, tel,
@@ -245,6 +263,7 @@ def save_place(poi_id: str, note: str = "", added_by: str = "", source: str = ""
             {**p, "note": note, "added_by": added_by, "source": source, "created_at": int(time.time())},
         )
         row = conn.execute("SELECT * FROM places WHERE id = ?", (cur.lastrowid,)).fetchone()
+    _export_map_data()
     return "已收录：\n" + _place_line(row) + "\n地图：" + _map_link(row["lng"], row["lat"], row["name"])
 
 
@@ -379,8 +398,19 @@ def delete_place(place_id: int) -> str:
         if not row:
             return f"没有编号为 {place_id} 的店"
         conn.execute("DELETE FROM places WHERE id = ?", (int(place_id),))
+    _export_map_data()
     return f"已删除：{row['name']}"
 
 
+@server.tool()
+def map_page_link() -> str:
+    """返回美食地图网页的链接：一张地图上标出所有收录的店，可搜索。群友想看全部店铺、要「地图」时发这个链接。"""
+    url = os.environ.get("FOOD_MAP_URL", "").strip()
+    if not url:
+        return "网页地图还没有配置对外访问地址（环境变量 FOOD_MAP_URL）"
+    return f"美食地图（共收录的店都在上面）：{url}"
+
+
 if __name__ == "__main__":
+    _export_map_data()
     server.run()
