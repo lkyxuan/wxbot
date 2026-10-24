@@ -1508,7 +1508,7 @@ class OpenAIAPI:
             error_type = type(e).__name__
             log(level="WARN", message=f"Chat Completions API 调用失败 [{error_type}]: {error_msg}")
             log(level="INFO", message="尝试备用方案（Responses API）")
-            return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url)
+            return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
 
         try:
             if stream:
@@ -1545,7 +1545,7 @@ class OpenAIAPI:
                     return result
                 else:
                     log(level="WARN", message=f"流式响应为空（收到 {chunk_count} 个块），尝试备用方案")
-                    return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url)
+                    return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
             else:
                 # 非流式模式：直接取 choices[0] 的消息内容
                 if response.choices and len(response.choices) > 0:
@@ -1558,16 +1558,17 @@ class OpenAIAPI:
                         return output
                     else:
                         log(level="WARN", message="非流式响应内容为空，尝试备用方案")
-                        return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url)
+                        return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
                 else:
                     log(level="WARN", message="响应中没有 choices，尝试备用方案")
-                    return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url)
+                    return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
         except Exception as e:
             error_type = type(e).__name__
             log(level="WARN", message=f"解析 API 响应出错 [{error_type}]: {str(e)}，尝试备用方案")
-            return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url)
+            return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
 
-    def _try_responses_api(self, message, model, stream, prompt, history=None, image_path="", image_url=""):
+    def _try_responses_api(self, message, model, stream, prompt, history=None, image_path="", image_url="",
+                           chat_meta=None):
         """
         备用方案：使用 Responses API 调用。
         当 Chat Completions API 调用失败时自动降级到此方案。
@@ -1598,6 +1599,7 @@ class OpenAIAPI:
             response = self.client.responses.create(
                 model=model,
                 input=input_items,
+                extra_headers=self._chat_meta_headers(chat_meta),
             )
 
             # 遍历 output 提取 message 条目中的文本（兼容 reasoning 等其它条目类型）
