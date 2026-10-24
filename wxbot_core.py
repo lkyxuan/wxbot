@@ -348,6 +348,18 @@ SPLIT_PROMPT_TEMPLATE = """\
 # ============================================================
 THINK_BLOCK_RE = re.compile(r'<think\b[^>]*>.*?</think>', re.IGNORECASE | re.DOTALL)
 LEADING_THINK_RE = re.compile(r'^\s*<think\b[^>]*>', re.IGNORECASE)
+# 记忆历史里的时间前缀格式（如 "[2026/10/23 21:04:31]"），模型有时会模仿着放在回复开头
+LEADING_TIMESTAMP_RE = re.compile(
+    r'^[ \t]*[\[【]\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?[\]】][ \t]*',
+    re.MULTILINE,
+)
+
+
+def strip_leading_timestamps(text):
+    """去掉回复里每行开头模仿记忆格式的时间戳。"""
+    if not text:
+        return text
+    return LEADING_TIMESTAMP_RE.sub("", str(text))
 
 
 def clean_ai_reply_text(text):
@@ -1440,7 +1452,10 @@ class OpenAIAPI:
             t = h.get('time', '')
             raw = h.get('content', '')
             sender = h.get('sender', '')
-            if role == 'user' and sender:
+            if role == 'assistant':
+                # 助手历史不带时间前缀：带了模型会模仿，把 "[2026/10/23 21:04:31]" 也发给用户
+                content = raw
+            elif sender:
                 content = f"[{t}] {sender}: {raw}" if t else f"{sender}: {raw}"
             else:
                 content = f"[{t}] {raw}" if t else raw
@@ -1791,7 +1806,7 @@ class CozeAPI:
                 raw = h.get('content', '')
                 sender = h.get('sender', '')
                 if h.get('attr') == 'self':
-                    content = f"[{t}] {raw}" if t else raw
+                    content = raw   # 助手历史不带时间前缀，避免模型模仿
                     try:
                         additional_messages.append(CozeMessage.build_assistant_answer(content))
                     except Exception:
@@ -4049,11 +4064,14 @@ class WXBot:
 
     def _parse_split_reply(self, reply, max_count):
         """按 ||SPLIT|| 分隔符解析回复，过滤空白，截断到 max_count 条"""
-        parts = [p.strip() for p in reply.split(SPLIT_SEPARATOR) if p.strip()]
+        parts = [strip_leading_timestamps(p.strip()).strip() for p in reply.split(SPLIT_SEPARATOR)]
+        parts = [p for p in parts if p]
         return parts[:max_count] if parts else [reply]
 
     def _clean_reply_for_send(self, reply):
         """按配置清洗即将发送给用户的 AI 回复。"""
+        # 时间戳前缀不受清洗开关控制，任何情况下都不该发给用户
+        reply = strip_leading_timestamps(reply)
         if not self.config.clean_ai_reply_switch:
             return reply
         cleaned = clean_ai_reply_text(reply)
