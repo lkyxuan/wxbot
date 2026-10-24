@@ -3,27 +3,45 @@
     "host": "127.0.0.1",
     "port": 8100
   },
-  "api_keys": ["改成一串随机字符，面板里接口的 Key 填同一串"],
-
+  "api_keys": [
+    "改成一串随机字符，面板里接口的 Key 填同一串"
+  ],
   "llm": {
     "base_url": "https://api.deepseek.com",
     "api_key_env": "DEEPSEEK_API_KEY",
     "model": "deepseek-chat"
   },
-
   "mcp_servers": {
     "crypto": {
       "command": "python",
-      "args": ["mcp_servers/crypto_server.py"],
+      "args": [
+        "mcp_servers/crypto_server.py"
+      ],
+      "env": {}
+    },
+    "food": {
+      "command": "python",
+      "args": [
+        "mcp_servers/food_server.py"
+      ],
       "env": {}
     }
   },
-
   "agents": {
     "crypto": {
       "prompt_file": "agents/crypto.md",
-      "mcp": ["crypto"],
+      "mcp": [
+        "crypto"
+      ],
       "max_tool_rounds": 5,
+      "use_client_prompt": true
+    },
+    "food": {
+      "prompt_file": "agents/food.md",
+      "mcp": [
+        "food"
+      ],
+      "max_tool_rounds": 6,
       "use_client_prompt": true
     }
   }
