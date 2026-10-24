@@ -76,6 +76,7 @@ DEFAULT_CONFIG = {
     'chat_api_map': {},
     'chat_max_round_map': {},
     'group_prompt_map': {},
+    'group_sender_prompt_map': {},
     'scheduled_msg_switch': False,
     'scheduled_msg_list': [],
     'random_msg_switch': False,
@@ -97,6 +98,7 @@ DEFAULT_CONFIG = {
     'reply_delay_min': 1,
     'reply_delay_max': 5,
     'clean_ai_reply_switch': True,
+    'api_chat_meta_headers': False,
     'chat_image_recognition_switch': False,
     'chat_image_recognition_api': 0,
     'group_image_recognition_switch': False,
@@ -196,6 +198,7 @@ def _coerce_bool_fields(merged_config):
         'memory_switch',                    # 记忆开关
         'reply_delay_switch',               # 发送延迟开关
         'clean_ai_reply_switch',            # AI 回复清洗开关
+        'api_chat_meta_headers',            # 接口请求头附带群名/发言人
         'chat_image_recognition_switch',    # 私聊图片识别开关
         'group_image_recognition_switch',   # 群组图片识别开关
         'custom_forward_switch',            # 自定义转发总开关
@@ -398,6 +401,25 @@ def _coerce_dict_fields(merged_config):
             merged_config['group_prompt_map'] = clean
         else:
             merged_config['group_prompt_map'] = {}
+
+    # group_sender_prompt_map: {群名: {群内显示名: prompt 文件名}}，空键/空值丢弃
+    if 'group_sender_prompt_map' in merged_config:
+        gspm = merged_config['group_sender_prompt_map']
+        clean = {}
+        if isinstance(gspm, dict):
+            for g, senders in gspm.items():
+                g = str(g).strip()
+                if not g or not isinstance(senders, dict):
+                    continue
+                inner = {}
+                for k, v in senders.items():
+                    k = str(k).strip()
+                    v = str(v).strip()
+                    if k and v:
+                        inner[k] = v
+                if inner:
+                    clean[g] = inner
+        merged_config['group_sender_prompt_map'] = clean
 
 def normalize(config):
     """统一规范化：清掉旧 API 字段 + 6 类类型校验。

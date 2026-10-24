@@ -601,6 +601,13 @@ def _prompt_reference_sources(name):
             for target, prompt_name in mapping.items():
                 if str(prompt_name) == name:
                     sources.append(f'{label}（{target}）')
+    sender_mapping = config.get('group_sender_prompt_map')
+    if isinstance(sender_mapping, dict):
+        for group_name, senders in sender_mapping.items():
+            if isinstance(senders, dict):
+                for sender, prompt_name in senders.items():
+                    if str(prompt_name) == name:
+                        sources.append(f'群聊发言人 Prompt（{group_name} / {sender}）')
     return sources
 
 

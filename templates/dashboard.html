@@ -913,6 +913,30 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
       <button type="button" class="btn-add" id="btn-add-group-item"><i class="bi bi-plus-circle"></i> 添加群组</button>
       <hr>
+      <label class="cfg-label">群聊发言人专属 Prompt</label>
+      <div class="cfg-hint" style="margin-bottom:10px;">
+        同一个群里给指定的人换 Prompt，优先级高于上面的群组 Prompt；没配的人仍用群组 Prompt。<br>
+        发言人填群里显示的名字（好友显示备注，非好友显示群昵称）。对方改名后需要在这里同步修改。
+      </div>
+      <div id="group_sender_prompt_container">
+        {% for g, senders in config.group_sender_prompt_map.items() %}
+        {% for s, pname in senders.items() %}
+        <div class="list-item group-sender-prompt-item" style="flex-wrap:wrap;gap:6px;">
+          <input type="text" class="form-control gsp-group" value="{{ g }}" placeholder="群聊名称">
+          <input type="text" class="form-control gsp-sender" value="{{ s }}" placeholder="发言人显示名">
+          <select class="form-select group-sender-prompt-select" style="width:145px;flex-shrink:0;" title="该发言人使用的Prompt">
+            <option value="">默认（全局）</option>
+            {% for p in prompts %}
+            <option value="{{ p.name }}" {% if pname == p.name %}selected{% endif %}>{{ p.name }}</option>
+            {% endfor %}
+          </select>
+          <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+        </div>
+        {% endfor %}
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" id="btn-add-group-sender-prompt"><i class="bi bi-plus-circle"></i> 添加发言人</button>
+      <hr>
       <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:6px;">
         <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
           <input class="form-check-input" type="checkbox" id="group_image_recognition_switch"
@@ -1697,6 +1721,11 @@ html.icons-pref-local [class*=" bi-"]::before {
         <input class="form-check-input" type="checkbox" id="clean_ai_reply_switch" {% if config.get('clean_ai_reply_switch', True) %}checked{% endif %}>
         <label for="clean_ai_reply_switch">屏蔽模型思考过程</label>
         <span class="switch-desc">自动移除模型返回的思考标签，避免将推理过程发送给用户</span>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="api_chat_meta_headers" {% if config.get('api_chat_meta_headers', False) %}checked{% endif %}>
+        <label for="api_chat_meta_headers">请求头附带会话信息</label>
+        <span class="switch-desc">调用 OpenAI 兼容接口时带上 X-WX-Chat / X-WX-Chat-Type / X-WX-Sender 请求头（UTF-8 百分号编码），供自建 AI 网关区分群和发言人；用第三方接口时建议关闭</span>
       </div>
     </div>
   </div>
