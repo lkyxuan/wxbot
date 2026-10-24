@@ -37,6 +37,9 @@ DB_PATH = os.environ.get(
 )
 
 # 高德 POI ID：B0 开头的 10 位字母数字
+# 静态地图、店铺照片的本地存放目录；机器人配置 ai_reply_image_dirs 要包含它
+IMAGE_DIR = os.environ.get("FOOD_IMAGE_DIR", os.path.join(os.path.dirname(DB_PATH), "images"))
+
 POI_ID_RE = re.compile(r"\bB0[0-9A-Z]{8}\b")
 URL_RE = re.compile(r"https?://[^\s<>\"'，。]+")
 AMAP_HOSTS = ("amap.com", "autonavi.com")
@@ -312,6 +315,57 @@ def place_map_link(place_id: int) -> str:
     if row["lng"] is None:
         return f"{row['name']} 没有坐标，无法生成地图链接"
     return f"{row['name']}：{_map_link(row['lng'], row['lat'], row['name'])}"
+
+
+def _download(url, params, filename):
+    """下载图片到 IMAGE_DIR；已下载过直接复用。返回绝对路径，失败返回空字符串。"""
+    path = os.path.abspath(os.path.join(IMAGE_DIR, filename))
+    if os.path.isfile(path) and os.path.getsize(path) > 0:
+        return path
+    os.makedirs(IMAGE_DIR, exist_ok=True)
+    try:
+        resp = requests.get(url, params=params, timeout=TIMEOUT)
+    except requests.RequestException:
+        return ""
+    if resp.status_code != 200 or not resp.headers.get("Content-Type", "").startswith("image/"):
+        return ""
+    with open(path, "wb") as f:
+        f.write(resp.content)
+    return path
+
+
+@server.tool()
+def place_images(place_id: int, include_photo: bool = True) -> str:
+    """生成某家已收录店铺的图片：高德静态地图（标出店铺位置），以及高德上的店铺照片（如果有）。
+    返回的每张图片是单独一行「[图片]本地路径」，回复时把这些行原样单独成行写出，机器人会把它们作为图片发到群里。
+
+    place_id: 店铺编号
+    include_photo: 是否附带店铺照片，默认是
+    """
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM places WHERE id = ?", (int(place_id),)).fetchone()
+    if not row:
+        return f"没有编号为 {place_id} 的店"
+    lines = []
+    if row["lng"] is not None:
+        loc = f"{row['lng']},{row['lat']}"
+        key = os.environ.get("AMAP_KEY", "").strip()
+        path = _download(
+            f"{API_BASE}/v3/staticmap",
+            {"location": loc, "zoom": 16, "size": "600*400", "scale": 2, "markers": f"mid,,A:{loc}", "key": key},
+            f"map_{row['id']}.png",
+        )
+        if path:
+            lines.append(f"[图片]{path}")
+    if include_photo and row["photo_url"]:
+        ext = os.path.splitext(urlparse(row["photo_url"]).path)[1].lower()
+        ext = ext if ext in (".jpg", ".jpeg", ".png", ".webp") else ".jpg"
+        path = _download(row["photo_url"], None, f"photo_{row['id']}{ext}")
+        if path:
+            lines.append(f"[图片]{path}")
+    if not lines:
+        return f"{row['name']} 暂时没有可发的图片"
+    return f"{row['name']} 的图片：\n" + "\n".join(lines)
 
 
 @server.tool()
