@@ -1,0 +1,2108 @@
+<!DOCTYPE html>
+<!-- ============================================================
+     【新增配置项检查清单】本文件内 1 步：② 前端控件 + 初始值
+     ③（前端采集）在 templates/static/dashboard.js；
+     全流程 5 步必改 + 1 步可选，编号与索引见 web_server.py 顶部。
+
+       ② 控件 + 初始值：在对应的 <div class="config-panel" id="tab-xxx"> 内加 HTML
+            布尔：{% if config.get('字段名', False) %}checked{% endif %}
+            文本：value="{{ config.字段名 }}"
+          ⚠ 老配置缺键由 config_defaults.apply_defaults 统一兜底，
+            本文件与 web_server.py 都不需要再补 setdefault。
+
+     新增一个 tab 需要同时改两处：
+       - 侧边栏：<a class="nav-link" data-tab="tab-xxx">（当前共 20 个 tab）
+       - 内容区：<div class="config-panel" id="tab-xxx">
+       并按需在 dashboard.js 的 activateTab() 里挂轮询。
+
+     分区约定（CSS / JS 已拆到同级文件）：
+       templates/dashboard.html         <!-- ===== Tab: 名称 ===== --&gt;  每个 tab 面板
+       templates/static/dashboard.css   /* ===== 区块名 ===== */       样式区
+       templates/static/dashboard.js    // ===== 区块名 =====          脚本区块
+       函数内部用  // --- 序号 名称 ---                                 子分区
+     ============================================================ -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SiverWXBot 管理面板</title>
+<link rel="icon" href="https://wxbot.siverking.online/favicon.ico" type="image/x-icon">
+{# ===== 第三方前端库（Bootstrap 5.3.0 / jQuery 3.6.0 / Summernote-lite 0.8.18）=====
+   文件位置：templates/static/vendor/  （升级这些库时必须同时替换该目录下的文件）
+   加载策略：
+     本地直连（浏览器直接开 127.0.0.1 / localhost / 局域网 IP）→ 优先读本地文件，
+       面板不再依赖外部 CDN，断网也能正常打开和保存配置。
+     远程中继（经 SiverPanel 访问，请求头由 siver_panel.py 带上 X-Siver-Remote）
+       → 优先走 CDN，避免大文件经过中继转发。
+   两个源始终互为兜底：主源加载失败会自动切到另一个源
+     （CSS 见 data-alt + onerror；JS 见紧跟其后的兜底 document.write）。 #}
+{% set _vf  = not request.headers.get('X-Siver-Remote') %}
+{% set _vq  = ('?v=' ~ bot_version) if bot_version else '' %}
+{% set _cdn = 'https://s4.zstatic.net/npm/' %}
+{% set bsCssP  = (url_for('static', filename='vendor/bootstrap.min.css') ~ _vq) if _vf else (_cdn ~ 'bootstrap@5.3.0/dist/css/bootstrap.min.css') %}
+{% set bsCssA  = (_cdn ~ 'bootstrap@5.3.0/dist/css/bootstrap.min.css') if _vf else (url_for('static', filename='vendor/bootstrap.min.css') ~ _vq) %}
+{% set snCssP  = (url_for('static', filename='vendor/summernote-lite.min.css') ~ _vq) if _vf else (_cdn ~ 'summernote@0.8.18/dist/summernote-lite.min.css') %}
+{% set snCssA  = (_cdn ~ 'summernote@0.8.18/dist/summernote-lite.min.css') if _vf else (url_for('static', filename='vendor/summernote-lite.min.css') ~ _vq) %}
+{% set jqP     = (url_for('static', filename='vendor/jquery.min.js') ~ _vq) if _vf else (_cdn ~ 'jquery@3.6.0/dist/jquery.min.js') %}
+{% set jqA     = (_cdn ~ 'jquery@3.6.0/dist/jquery.min.js') if _vf else (url_for('static', filename='vendor/jquery.min.js') ~ _vq) %}
+{% set bsJsP   = (url_for('static', filename='vendor/bootstrap.bundle.min.js') ~ _vq) if _vf else (_cdn ~ 'bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js') %}
+{% set bsJsA   = (_cdn ~ 'bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js') if _vf else (url_for('static', filename='vendor/bootstrap.bundle.min.js') ~ _vq) %}
+{% set snJsP   = (url_for('static', filename='vendor/summernote-lite.min.js') ~ _vq) if _vf else (_cdn ~ 'summernote@0.8.18/dist/summernote-lite.min.js') %}
+{% set snJsA   = (_cdn ~ 'summernote@0.8.18/dist/summernote-lite.min.js') if _vf else (url_for('static', filename='vendor/summernote-lite.min.js') ~ _vq) %}
+{% set snLangP = (url_for('static', filename='vendor/summernote-zh-CN.min.js') ~ _vq) if _vf else (_cdn ~ 'summernote@0.8.18/dist/lang/summernote-zh-CN.min.js') %}
+{% set snLangA = (_cdn ~ 'summernote@0.8.18/dist/lang/summernote-zh-CN.min.js') if _vf else (url_for('static', filename='vendor/summernote-zh-CN.min.js') ~ _vq) %}
+<link rel="stylesheet" href="{{ bsCssP }}" data-alt="{{ bsCssA }}" onerror="this.onerror=null;this.href=this.dataset.alt">
+<script>
+window.__BOOTSTRAP_ICONS_CDN_CSS__ = "https://wxbot.siverking.online/panel/static/bootstrap-icons.css";
+window.__BOOTSTRAP_ICONS_LOCAL_CSS__ = {{ url_for('static', filename='bootstrap-icons.css') | tojson }};
+window.__BOOTSTRAP_ICONS_USE_LOCAL_FIRST__ = /^(127\.0\.0\.1|localhost)$/i.test(location.hostname);
+window.__BOOTSTRAP_ICONS_PRIMARY_CSS__ = window.__BOOTSTRAP_ICONS_USE_LOCAL_FIRST__
+  ? window.__BOOTSTRAP_ICONS_LOCAL_CSS__
+  : window.__BOOTSTRAP_ICONS_CDN_CSS__;
+window.__BOOTSTRAP_ICONS_FALLBACK_CSS__ = window.__BOOTSTRAP_ICONS_USE_LOCAL_FIRST__
+  ? window.__BOOTSTRAP_ICONS_CDN_CSS__
+  : window.__BOOTSTRAP_ICONS_LOCAL_CSS__;
+window.__bootstrapIconsCssFallback = function(linkEl){
+  if(!linkEl || linkEl.dataset.fallbackApplied === '1'){
+    return;
+  }
+  linkEl.dataset.fallbackApplied = '1';
+  linkEl.href = window.__BOOTSTRAP_ICONS_FALLBACK_CSS__;
+};
+document.documentElement.classList.add(window.__BOOTSTRAP_ICONS_USE_LOCAL_FIRST__ ? 'icons-pref-local' : 'icons-pref-cdn');
+(function(){
+  var link = document.createElement('link');
+  link.id = 'bootstrap-icons-link';
+  link.rel = 'stylesheet';
+  link.href = window.__BOOTSTRAP_ICONS_PRIMARY_CSS__;
+  link.onerror = function(){ window.__bootstrapIconsCssFallback(link); };
+  document.head.appendChild(link);
+})();
+</script>
+<style>
+@font-face {
+  font-display: block;
+  font-family: "bootstrap-icons-pref-cdn";
+  src:
+    url("https://wxbot.siverking.online/panel/static/fonts/bootstrap-icons.woff2") format("woff2"),
+    url("{{ url_for('static', filename='fonts/bootstrap-icons.woff2') }}") format("woff2"),
+    url("https://wxbot.siverking.online/panel/static/fonts/bootstrap-icons.woff") format("woff"),
+    url("{{ url_for('static', filename='fonts/bootstrap-icons.woff') }}") format("woff");
+}
+
+@font-face {
+  font-display: block;
+  font-family: "bootstrap-icons-pref-local";
+  src:
+    url("{{ url_for('static', filename='fonts/bootstrap-icons.woff2') }}") format("woff2"),
+    url("https://wxbot.siverking.online/panel/static/fonts/bootstrap-icons.woff2") format("woff2"),
+    url("{{ url_for('static', filename='fonts/bootstrap-icons.woff') }}") format("woff"),
+    url("https://wxbot.siverking.online/panel/static/fonts/bootstrap-icons.woff") format("woff");
+}
+
+html.icons-pref-cdn .bi::before,
+html.icons-pref-cdn [class^="bi-"]::before,
+html.icons-pref-cdn [class*=" bi-"]::before {
+  font-family: bootstrap-icons-pref-cdn !important;
+}
+
+html.icons-pref-local .bi::before,
+html.icons-pref-local [class^="bi-"]::before,
+html.icons-pref-local [class*=" bi-"]::before {
+  font-family: bootstrap-icons-pref-local !important;
+}
+</style>
+<link rel="stylesheet" href="{{ snCssP }}" data-alt="{{ snCssA }}" onerror="this.onerror=null;this.href=this.dataset.alt">
+<link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}?v={{ bot_version }}">
+</head>
+<body>
+<!-- ===== Topbar ===== -->
+<div class="topbar">
+  <div class="topbar-left">
+    <button type="button" class="mobile-menu-btn" id="mobileMenuBtn" aria-label="打开菜单">
+      <i class="bi bi-list"></i>
+    </button>
+    <div class="brand"><i class="bi bi-robot"></i> SiverWXBot 管理面板</div>
+  </div>
+  <div class="topbar-notice" id="topbar-notice" style="display:none;">
+    <i class="bi bi-exclamation-triangle-fill"></i>
+    机器人运行中，若在面板修改了配置请关闭后重新启动
+  </div>
+  <div class="user-area">
+    <a href="https://wxbot.siverking.online/" target="_blank" rel="noopener"
+       style="display:inline-flex;align-items:center;gap:5px;color:rgba(255,255,255,.75);font-size:13px;text-decoration:none;border:1px solid rgba(255,255,255,.2);padding:4px 12px;border-radius:6px;transition:all .2s;"
+       onmouseover="this.style.background='rgba(255,255,255,.1)';this.style.color='#fff';"
+       onmouseout="this.style.background='';this.style.color='rgba(255,255,255,.75)';">
+      <i class="bi bi-file-text"></i><span class="topbar-link-text">使用文档</span>
+    </a>
+    <a href="https://github.com/SiverKing/SiverWXbot_plus/blob/main/docs/docs.md" target="_blank" rel="noopener"
+       style="display:inline-flex;align-items:center;gap:5px;color:rgba(255,255,255,.75);font-size:13px;text-decoration:none;border:1px solid rgba(255,255,255,.2);padding:4px 12px;border-radius:6px;transition:all .2s;"
+       onmouseover="this.style.background='rgba(255,255,255,.1)';this.style.color='#fff';"
+       onmouseout="this.style.background='';this.style.color='rgba(255,255,255,.75)';">
+      <i class="bi bi-file-text"></i><span class="topbar-link-text">备用文档</span>
+    </a>
+    <a href="https://github.com/SiverKing/SiverWXbot_plus" target="_blank" rel="noopener"
+       style="display:inline-flex;align-items:center;gap:5px;color:rgba(255,255,255,.75);font-size:13px;text-decoration:none;border:1px solid rgba(255,255,255,.2);padding:4px 12px;border-radius:6px;transition:all .2s;"
+       onmouseover="this.style.background='rgba(255,255,255,.1)';this.style.color='#fff';"
+       onmouseout="this.style.background='';this.style.color='rgba(255,255,255,.75)';">
+      <i class="bi bi-star-fill" style="color:#FFC300;font-size:12px;"></i><span class="topbar-link-text">Github Star</span>
+    </a>
+    <span class="topbar-username">{{ session.username }}</span>
+    <a href="{{ url_for('logout') }}"><i class="bi bi-box-arrow-right"></i><span class="topbar-link-text">退出</span></a>
+  </div>
+</div>
+
+<div class="sidebar-overlay" id="mobileSidebarOverlay"></div>
+
+<!-- ===== Sidebar ===== -->
+<nav class="sidebar">
+  <div class="mobile-sidebar-head">
+    <div class="title"><i class="bi bi-grid-1x2"></i> 页面导航</div>
+    <button type="button" class="close-btn" id="mobileSidebarClose" aria-label="关闭菜单">
+      <i class="bi bi-x-lg"></i>
+    </button>
+  </div>
+  <div class="nav-item"><a class="nav-link active" data-tab="tab-status"><i class="bi bi-speedometer2"></i> 状态面板</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-siver-panel"><i class="bi bi-router"></i> 远程访问服务</a></div>
+  <div class="nav-divider"></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-api"><i class="bi bi-cloud"></i> 模型配置</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-prompt"><i class="bi bi-chat-square-text"></i> Prompt</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-admin"><i class="bi bi-shield-lock"></i> 管理员</a></div>
+  <div class="nav-divider"></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-listen"><i class="bi bi-ear"></i> 私聊监听</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-group"><i class="bi bi-people"></i> 群组管理</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-friend"><i class="bi bi-person-plus"></i> 好友管理</a></div>
+  <div class="nav-divider"></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-keyword"><i class="bi bi-key"></i> 关键词回复</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-forward"><i class="bi bi-share"></i> 自定义转发</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-schedule"><i class="bi bi-alarm"></i> 定时消息</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-moments"><i class="bi bi-image"></i> 朋友圈</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-startstop"><i class="bi bi-clock-history"></i> 定时启停</a></div>
+  <div class="nav-divider"></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-memory"><i class="bi bi-journal-text"></i> 记忆管理</a></div>
+  <div class="nav-divider"></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-other"><i class="bi bi-sliders"></i> 其他配置</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-account"><i class="bi bi-person-gear"></i> 账号密码</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-email"><i class="bi bi-envelope-at"></i> 报错邮箱</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-webhook"><i class="bi bi-broadcast-pin"></i> Webhook 通知</a></div>
+  <div class="nav-divider"></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-backup"><i class="bi bi-shield-check"></i> 数据备份</a></div>
+</nav>
+
+<!-- ===== Main ===== -->
+<div class="main">
+  <!-- Action Bar -->
+  <div class="action-bar">
+    <button id="btnStart" class="btn btn-start"><i class="bi bi-play-fill"></i> 启动机器人</button>
+    <button id="btnStop" class="btn btn-stop"><i class="bi bi-stop-fill"></i> 停止机器人</button>
+    <button id="btnRestart" class="btn btn-restart"><i class="bi bi-arrow-repeat"></i> 重启载入新配置</button>
+    <div style="flex:1"></div>
+    <button id="btnLoad" class="btn btn-load" title="放弃当前页面未保存的修改，从磁盘重新加载配置。页面会刷新，但会停留在当前栏目。"><i class="bi bi-arrow-down-circle"></i> 放弃修改并重新加载</button>
+    <button id="btnSave" class="btn btn-save"><i class="bi bi-save"></i> 保存配置</button>
+  </div>
+
+  <form id="configForm">
+  <!-- ===== Tab: Status ===== -->
+  <div class="config-panel active" id="tab-status">
+
+    <!-- 版本更新卡片（有更新时插到运行状态前面，JS控制） -->
+    <div class="cfg-card" id="update-card">
+      <div class="cfg-card-header">
+        <i class="bi bi-arrow-repeat"></i>
+        <h5>版本更新</h5>
+        <span class="desc" id="update-last-check"></span>
+        <button type="button" id="btn-check-update" style="margin-left:auto;padding:4px 14px;border:1px solid var(--border);border-radius:6px;font-size:12.5px;font-weight:600;cursor:pointer;background:var(--card);color:var(--card-fg);transition:all .2s;" onmouseover="this.style.background='var(--muted-bg)'" onmouseout="this.style.background='var(--card)'">检查更新</button>
+      </div>
+      <!-- 检查中 -->
+      <div id="update-checking" style="display:none;color:var(--muted);font-size:13px;padding:4px 0;">
+        <i class="bi bi-hourglass-split"></i> 正在检查...
+      </div>
+      <!-- 已是最新 -->
+      <div id="update-latest" style="display:none;align-items:center;gap:10px;padding:12px 16px;border-radius:8px;background:#f0fdf4;border:1px solid #bbf7d0;">
+        <i class="bi bi-check-circle-fill" style="color:#07C160;font-size:18px;flex-shrink:0;"></i>
+        <div>
+          <div style="font-weight:600;font-size:13.5px;color:#166534;">当前已是最新版本</div>
+          <div id="update-current-ver" style="font-size:12px;color:var(--muted);margin-top:2px;"></div>
+        </div>
+      </div>
+      <!-- 有更新 -->
+      <div id="update-available" style="display:none;">
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:14px 16px;border-radius:8px;background:#fffbeb;border:1px solid #fde68a;margin-bottom:14px;">
+          <i class="bi bi-exclamation-triangle-fill" style="color:#f59e0b;font-size:18px;flex-shrink:0;margin-top:1px;"></i>
+          <div>
+            <div style="font-weight:700;font-size:13.5px;color:#92400e;">发现新版本！</div>
+            <div id="update-new-ver" style="font-size:12.5px;color:#78350f;margin-top:4px;"></div>
+          </div>
+        </div>
+        <div style="font-size:13px;font-weight:600;color:var(--card-fg);margin-bottom:10px;">更新下载：</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">
+          <a href="https://github.com/SiverKing/SiverWXbot_plus" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:7px 16px;background:var(--card);color:var(--card-fg);border:1px solid var(--border);border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;transition:all .2s;" onmouseover="this.style.background='var(--muted-bg)'" onmouseout="this.style.background='var(--card)'">
+            <i class="bi bi-github"></i> 源码 GitHub
+          </a>
+          <a href="https://github.com/SiverKing/SiverWXbot_plus/releases" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:7px 16px;background:var(--primary);color:#fff;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;transition:opacity .2s;" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+            <i class="bi bi-download"></i> exe Releases
+          </a>
+          <a href="https://wwbuf.lanzout.com/b00tcdnlte" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:7px 16px;background:#576B95;color:#fff;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;transition:opacity .2s;" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+            <i class="bi bi-cloud-download"></i> exe 蓝奏云 (密码：1234)
+          </a>
+        </div>
+        <div style="margin-top:14px;padding:10px 14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;font-size:12.5px;color:#0c4a6e;line-height:1.8;">
+          <div style="font-weight:700;margin-bottom:4px;"><i class="bi bi-info-circle-fill" style="color:#0ea5e9;margin-right:5px;"></i>更新方法</div>
+          <div>· <b>源码版</b>：直接替换 <code>wxbot_core.py</code>、<code>web_server.py</code>、<code>templates/</code> 等源码文件即可</div>
+          <div>· <b>exe 版</b>：替换 exe 文件即可</div>
+          <div>· 保留 <code>config/</code> 和 <code>memory/</code> 文件夹，原有配置与对话记忆完全复用，无需重新配置</div>
+          <div style="margin-top:6px;padding:6px 10px;background:#fef3c7;border:1px solid #fbbf24;border-radius:6px;color:#78350f;font-weight:600;">
+            <i class="bi bi-arrow-repeat" style="color:#f59e0b;margin-right:4px;"></i>若您部署运行的是 源码版 同时需要将 <code>wxautox4</code> 依赖库更新到最新版本（<code>pip install --upgrade wxautox4</code>）  exe版无需此操作
+          </div>
+          <div style="margin-top:6px;padding:6px 10px;background:#fef9c3;border:1px solid #fde047;border-radius:6px;color:#713f12;font-weight:600;">
+            <i class="bi bi-exclamation-triangle-fill" style="color:#eab308;margin-right:4px;"></i>更新前请先备份 <code>config/</code> 和 <code>memory/</code> 文件夹，以防意外
+          </div>
+        </div>
+      </div>
+      <!-- 检查失败 -->
+      <div id="update-error" style="display:none;color:var(--muted);font-size:13px;padding:4px 0;">
+        <i class="bi bi-wifi-off"></i> 检查失败，请检查网络连接
+        <span id="update-retry-hint" style="margin-left:6px;"></span>
+      </div>
+    </div>
+
+    <!-- 开发者广播通知卡片（有通知时由 JS 控制显示） -->
+    <div class="cfg-card" id="infrom-card" style="display:none;">
+      <div class="cfg-card-header">
+        <i class="bi bi-megaphone-fill" style="color:#576B95;"></i>
+        <h5>开发者通知</h5>
+        <span class="desc">来自开发者的广播消息</span>
+      </div>
+      <div style="padding:12px 16px;border-radius:8px;background:#f0f7ff;border:1px solid #bcd4f5;color:#1a5fa8;font-size:13px;line-height:1.9;white-space:pre-wrap;word-break:break-word;" id="infrom-content"></div>
+    </div>
+
+    <!-- wxautox4 激活状态卡片（JS 控制位置：未激活插到运行状态前面，已激活插到后面） -->
+    <div class="cfg-card" id="activate-card" style="display:none;">
+      <div class="cfg-card-header">
+        <i class="bi bi-shield-check"></i>
+        <h5>wxautox4 授权状态</h5>
+        <button type="button" id="btn-check-activate" style="margin-left:auto;padding:4px 14px;border:1px solid var(--border);border-radius:6px;font-size:12.5px;font-weight:600;cursor:pointer;background:var(--card);color:var(--card-fg);transition:all .2s;" onmouseover="this.style.background='var(--muted-bg)'" onmouseout="this.style.background='var(--card)'">重新检测</button>
+      </div>
+      <!-- 检查中 -->
+      <div id="activate-checking" style="display:none;color:var(--muted);font-size:13px;padding:4px 0;">
+        <i class="bi bi-hourglass-split"></i> 正在检测授权...
+      </div>
+      <!-- 已激活 -->
+      <div id="activate-ok" style="display:none;align-items:center;gap:10px;padding:12px 16px;border-radius:8px;background:#f0fdf4;border:1px solid #bbf7d0;">
+        <i class="bi bi-shield-fill-check" style="color:#07C160;font-size:18px;flex-shrink:0;"></i>
+        <div>
+          <div style="font-weight:600;font-size:13.5px;color:#166534;">本设备 wxautox4 已激活</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px;">内核库授权正常，机器人可正常使用</div>
+        </div>
+      </div>
+      <!-- 未激活 -->
+      <div id="activate-fail" style="display:none;">
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:14px 16px;border-radius:8px;background:#fff1f1;border:1px solid #fca5a5;margin-bottom:14px;">
+          <i class="bi bi-shield-exclamation" style="color:#ef4444;font-size:18px;flex-shrink:0;margin-top:1px;"></i>
+          <div>
+            <div style="font-weight:700;font-size:13.5px;color:#991b1b;">本设备 wxautox4 未激活！</div>
+            <div style="font-size:12.5px;color:#7f1d1d;margin-top:4px;">内核库未授权，机器人将无法正常工作。  若已有激活码也请点击获取授权来获取激活器</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">
+          <a href="https://www.siverking.online/static/img/siver_wx.jpg" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:7px 16px;background:#576B95;color:#fff;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;transition:opacity .2s;" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+            <i class="bi bi-key"></i> 获取激活码授权
+          </a>
+          <button type="button" onclick="showActivateDialog()" style="display:inline-flex;align-items:center;gap:6px;padding:7px 16px;background:#07C160;color:#fff;border-radius:6px;font-size:13px;font-weight:600;border:none;cursor:pointer;transition:opacity .2s;" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+            <i class="bi bi-key-fill"></i> 已有激活码？点我激活
+          </button>
+        </div>
+      </div>
+      <!-- 检测失败 -->
+      <div id="activate-error" style="display:none;color:var(--muted);font-size:13px;padding:4px 0;">
+        <i class="bi bi-wifi-off"></i> 检测失败，请检查 wxautox4 是否已安装
+      </div>
+    </div>
+
+    <div class="cfg-card" id="status-main-card">
+      <div class="cfg-card-header"><i class="bi bi-speedometer2"></i><h5>运行状态</h5><span class="desc" id="status-refresh-hint">每5秒自动刷新</span></div>
+      <!-- 运行状态大卡 -->
+      <div style="display:flex;align-items:center;gap:16px;padding:16px 20px;border-radius:8px;margin-bottom:20px;border:1px solid var(--border);background:var(--muted-bg);">
+        <div id="status-dot" style="width:14px;height:14px;border-radius:50%;background:#ccc;flex-shrink:0;"></div>
+        <div>
+          <div id="status-text" style="font-size:15px;font-weight:700;color:var(--card-fg);">加载中...</div>
+          <div id="status-sub" style="font-size:12px;color:var(--muted);margin-top:2px;"></div>
+        </div>
+        <div style="margin-left:auto;font-size:12px;color:var(--muted);" id="status-uptime"></div>
+      </div>
+      <!-- 统计卡片网格 -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
+        <div class="stat-card" id="sc-received">
+          <div class="stat-icon"><i class="bi bi-chat-left-text"></i></div>
+          <div class="stat-val" id="sv-received">-</div>
+          <div class="stat-label">收到消息</div>
+        </div>
+        <div class="stat-card" id="sc-replied">
+          <div class="stat-icon"><i class="bi bi-reply"></i></div>
+          <div class="stat-val" id="sv-replied">-</div>
+          <div class="stat-label">已回复</div>
+        </div>
+        <div class="stat-card" id="sc-listen">
+          <div class="stat-icon"><i class="bi bi-ear"></i></div>
+          <div class="stat-val" id="sv-listen">-</div>
+          <div class="stat-label">监听模式</div>
+        </div>
+        <div class="stat-card" id="sc-group">
+          <div class="stat-icon"><i class="bi bi-people"></i></div>
+          <div class="stat-val" id="sv-group">-</div>
+          <div class="stat-label">监听群组</div>
+        </div>
+        <div class="stat-card" id="sc-schedule">
+          <div class="stat-icon"><i class="bi bi-alarm"></i></div>
+          <div class="stat-val" id="sv-schedule">-</div>
+          <div class="stat-label">定时任务</div>
+        </div>
+        <div class="stat-card" id="sc-api">
+          <div class="stat-icon"><i class="bi bi-cloud"></i></div>
+          <div class="stat-val" id="sv-api" style="font-size:13px;">-</div>
+          <div class="stat-label">API SDK</div>
+        </div>
+        <div class="stat-card" id="sc-keyword">
+          <div class="stat-icon"><i class="bi bi-key"></i></div>
+          <div class="stat-val" id="sv-keyword">-</div>
+          <div class="stat-label">关键词回复</div>
+        </div>
+        <div class="stat-card" id="sc-memory">
+          <div class="stat-icon"><i class="bi bi-database"></i></div>
+          <div class="stat-val" id="sv-memory">-</div>
+          <div class="stat-label">对话记忆</div>
+        </div>
+        <div class="stat-card" id="sc-delay">
+          <div class="stat-icon"><i class="bi bi-hourglass-split"></i></div>
+          <div class="stat-val" id="sv-delay">-</div>
+          <div class="stat-label">回复延迟</div>
+        </div>
+        <div class="stat-card" id="sc-max-round">
+          <div class="stat-icon"><i class="bi bi-shield-check"></i></div>
+          <div class="stat-val" id="sv-max-round">-</div>
+          <div class="stat-label">轮数限制</div>
+        </div>
+      </div>
+      <!-- 详情行 -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div class="detail-row"><span class="detail-key">微信账号</span><span class="detail-val" id="dv-nickname">-</span></div>
+        <div class="detail-row"><span class="detail-key">当前模型</span><span class="detail-val" id="dv-model">-</span></div>
+        <div class="detail-row"><span class="detail-key">启动时间</span><span class="detail-val" id="dv-start">-</span></div>
+        <div class="detail-row"><span class="detail-key">版本</span><span class="detail-val" id="dv-version">-</span></div>
+        <div class="detail-row"><span class="detail-key">最近消息</span><span class="detail-val" id="dv-lasttime">-</span></div>
+        <div class="detail-row"><span class="detail-key">最近发送者</span><span class="detail-val" id="dv-lastsender">-</span></div>
+        <div class="detail-row"><span class="detail-key">群词规则</span><span class="detail-val" id="dv-kw-at">-</span></div>
+        <div class="detail-row"><span class="detail-key">记忆上下文</span><span class="detail-val" id="dv-mem-ctx">-</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="config-panel" id="tab-siver-panel">
+    <div class="cfg-card" id="siver-panel-card" data-base-url="{{ config.get('siver_panel_base_url', 'https://panel.siver.top') }}">
+      <div class="cfg-card-header">
+        <i class="bi bi-router"></i>
+        <h5>远程访问服务</h5>
+        <span class="desc">接入 SiverPanel 远程连接访问服务</span>
+      </div>
+      <div style="display:grid;gap:14px;">
+        <div style="display:flex;gap:14px;align-items:flex-start;padding:16px 18px;background:linear-gradient(135deg,#f5f9ff 0%,#eef6ff 100%);border:1px solid #cfe2ff;border-radius:12px;">
+          <i class="bi bi-globe2" style="font-size:24px;color:#0d6efd;flex-shrink:0;margin-top:2px;"></i>
+          <div style="display:grid;gap:8px;">
+            <div style="font-size:14px;font-weight:700;color:#0f172a;">接入 SiverPanel 后，可用最轻量的方式远程访问你的面板, 免服务器免穿透 官方安全直连跨设备访问</div>
+            <div style="font-size:12.8px;line-height:1.9;color:#334155;">
+              只需在当前 Windows 设备运行本地面板并完成接入，你就可以在手机、公司电脑或其他浏览器中，通过一个网址直接访问并管理你的机器人面板。
+            </div>
+            <div style="font-size:12.5px;color:#0f4c81;line-height:1.8;">
+              例如安全入口设置为 <code>siver</code> 后，远程访问地址会是
+              <a href="https://panel.siver.top/panel/siver" target="_blank" rel="noopener" style="color:#0d6efd;font-weight:600;">https://panel.siver.top/panel/siver</a>
+                然后你在任意设备的浏览器访问这个地址就可以远程管理你的机器人面板。安全入口支持您自己完全自定义
+            </div>
+            <div style="padding:10px 12px;background:rgba(255,255,255,.72);border:1px solid #bfdbfe;border-radius:10px;font-size:12.5px;line-height:1.9;color:#1f2937;">
+              不开通远程访问服务，你依然可以继续正常使用本地面板；只有在你确实有跨设备远程访问和管理面板的需求时，再按需开通即可。
+            </div>
+          </div>
+        </div>
+
+        <div style="display:grid;gap:10px;padding:15px 16px;background:linear-gradient(135deg,#fff7ed 0%,#fff1f2 100%);border:1px solid #fdba74;border-radius:12px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+            <div style="font-size:14px;font-weight:800;color:#9a3412;">
+              <i class="bi bi-bag-heart-fill" style="margin-right:8px;"></i>先获取远程访问服务激活码，再填写下面的激活码
+            </div>
+            <a href="https://panel.siver.top" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:10px;background:#ea580c;color:#fff;text-decoration:none;font-size:12.8px;font-weight:700;box-shadow:0 8px 18px rgba(234,88,12,.18);">
+              <i class="bi bi-box-arrow-up-right"></i> 前往购买/获取
+            </a>
+          </div>
+          <div style="font-size:12.8px;line-height:1.9;color:#9a3412;">
+            远程访问服务激活码可在 <a href="https://panel.siver.top" target="_blank" rel="noopener" style="font-weight:800;color:#c2410c;">https://panel.siver.top</a> 获取。
+            这里使用的是 <strong>远程访问服务激活码</strong>，和 <code>wxautox4</code> 内核库的授权激活码不是同一个东西，两者彼此独立，也分别计费。
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;">
+          <div>
+            <label class="cfg-label" for="siver_panel_activation_code">激活码</label>
+            <input type="text" class="form-control" id="siver_panel_activation_code" value="{{ config.get('siver_panel_activation_code', '') }}" placeholder="请输入远程访问激活码" autocomplete="off">
+            <div style="display:grid;gap:6px;margin-top:8px;">
+              <div class="cfg-hint">将从 SiverPanel 获取到的远程访问服务激活码完整粘贴到这里。</div>
+              <div style="padding:9px 10px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;font-size:12.4px;line-height:1.8;color:#475569;font-weight:600;">请确认这里填写的是 <strong>远程访问服务激活码</strong>，不是 <code style="font-weight:800;color:#334155;">wxautox4</code> 内核库激活码。</div>
+            </div>
+          </div>
+          <div>
+            <label class="cfg-label" for="siver_panel_slug">安全入口</label>
+            <input type="text" class="form-control" id="siver_panel_slug" value="{{ config.get('siver_panel_slug', '') }}" placeholder="例如：siver" autocomplete="off" spellcheck="false">
+            <div class="cfg-hint">
+              安全入口用于远程连接访问，由您自己自定义设置。格式限制与服务端一致：5-32 位，仅支持小写字母、数字和连字符，且不能以连字符开头或结尾。
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:12px 14px;background:var(--muted-bg);border:1px solid var(--border);border-radius:10px;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <input class="form-check-input" type="checkbox" id="siver_panel_enabled" {% if config.get('siver_panel_enabled', False) %}checked{% endif %} style="margin:0;">
+            <div>
+              <div style="font-size:13.5px;font-weight:700;color:var(--card-fg);">开启远程访问服务</div>
+              <div style="font-size:12px;color:var(--muted);">开启后，面板启动时会自动尝试使用当前激活码和安全入口连接远程服务。</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:center;padding:18px 20px;border:1px solid #bfdbfe;border-radius:14px;background:linear-gradient(135deg,#eff6ff 0%,#f8fbff 100%);">
+          <div style="display:grid;gap:10px;justify-items:center;max-width:560px;text-align:center;">
+            <div style="font-size:13px;color:#1d4ed8;font-weight:700;">完成激活码和安全入口配置后，再点击下面按钮发起连接</div>
+            <button type="button" id="btn-siver-panel-connect" class="btn btn-save" style="min-width:220px;padding:12px 24px;border-radius:12px;font-size:15px;font-weight:800;box-shadow:0 10px 24px rgba(34,197,94,.20);">
+              <i class="bi bi-plug" style="margin-right:6px;"></i> 连接远程服务
+            </button>
+            <div style="font-size:12px;color:var(--muted);line-height:1.8;">
+              连接成功后，下方会显示当前远程地址、状态反馈和授权信息。
+            </div>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;">
+          <div class="stat-card">
+            <div class="stat-label">连接状态</div>
+            <div class="stat-val" id="siver-panel-quick-state" style="font-size:15px;">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">设备凭据</div>
+            <div class="stat-val" id="siver-panel-quick-bind" style="font-size:15px;">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">授权到期</div>
+            <div class="stat-val" id="siver-panel-quick-expire" style="font-size:13px;">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">自动重试</div>
+            <div class="stat-val" id="siver-panel-quick-retry" style="font-size:13px;">-</div>
+          </div>
+        </div>
+
+        <div style="display:grid;gap:10px;">
+          <div style="padding:12px 14px;background:#fffbe6;border:1px solid #fde68a;border-radius:10px;font-size:12.8px;line-height:1.9;color:#854d0e;">
+            <div style="font-weight:700;margin-bottom:4px;"><i class="bi bi-receipt-cutoff" style="margin-right:6px;"></i>服务说明</div>
+            该服务需要持续承担服务器资源和公网流量开销，因此会以较轻量的方式收取一定服务费用，用于长期稳定地提供远程连接访问服务。
+          </div>
+          <div style="padding:12px 14px;background:#fff5f5;border:1px solid #fecaca;border-radius:10px;font-size:12.8px;line-height:1.9;color:#991b1b;">
+            <div style="font-weight:700;margin-bottom:4px;"><i class="bi bi-shield-lock-fill" style="margin-right:6px;"></i>安全提醒</div>
+            如果你准备启用远程访问，请务必先修改面板默认账号和密码。否则一旦安全入口泄露，他人就可能直接尝试登录你的面板。
+          </div>
+        </div>
+
+        <div id="siver-panel-status-box" style="padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:var(--card);">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div id="siver-panel-status-dot" style="width:12px;height:12px;border-radius:50%;background:#9ca3af;flex-shrink:0;"></div>
+            <div style="flex:1;min-width:0;">
+              <div id="siver-panel-status-text" style="font-size:14px;font-weight:700;color:var(--card-fg);">未启用</div>
+              <div id="siver-panel-status-sub" style="font-size:12px;color:var(--muted);margin-top:2px;">关闭开关后不会自动连接。</div>
+            </div>
+            <div id="siver-panel-last-sync" style="font-size:12px;color:var(--muted);flex-shrink:0;">-</div>
+          </div>
+          <div style="display:grid;gap:10px;margin-top:12px;">
+            <div>
+              <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">服务反馈</div>
+              <div id="siver-panel-last-message" style="font-size:13px;line-height:1.8;color:var(--card-fg);word-break:break-word;">等待连接。</div>
+            </div>
+            <div>
+              <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">当前远程地址 - 可在其他设备访问此地址尝试远程连接你的面板</div>
+              <div id="siver-panel-current-url" style="font-size:13px;line-height:1.8;word-break:break-all;color:#0d6efd;">-</div>
+            </div>
+            <div>
+              <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">安全入口预览 - 可在其他设备访问此地址尝试远程连接你的面板</div>
+              <div id="siver-panel-url-preview" style="font-size:13px;line-height:1.8;word-break:break-all;color:var(--card-fg);">-</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="config-panel" id="tab-api">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-cloud"></i><h5>API 接口配置</h5><span class="desc">选中的接口为当前使用，至少保留 2 个</span></div>
+      <div id="api_configs_container">
+        {% for cfg in config.get('api_configs', []) %}
+        <div class="api-config-item" style="border:1px solid {% if loop.index0 == config.get('api_index', 0) %}var(--primary){% else %}var(--border){% endif %};border-radius:6px;padding:14px;margin-bottom:12px;background:{% if loop.index0 == config.get('api_index', 0) %}#f6fff9{% else %}var(--card){% endif %};">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+            <input type="radio" class="api-radio" name="api_index_radio" style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;" {% if loop.index0 == config.get('api_index', 0) %}checked{% endif %}>
+            <span class="api-config-num" style="font-weight:600;font-size:13.5px;">接口 {{ loop.index }}</span>
+            <span class="api-active-badge" style="font-size:11px;background:var(--primary);color:#fff;border-radius:10px;padding:1px 8px;{% if loop.index0 != config.get('api_index', 0) %}display:none;{% endif %}">当前使用</span>
+            <button type="button" class="btn-rm btn-remove-api-config" style="margin-left:auto;" title="删除此接口"><i class="bi bi-trash"></i></button>
+          </div>
+          <div class="row g-2">
+            <div class="col-12 col-md-3">
+              <label class="cfg-label">SDK</label>
+              <div style="position:relative;">
+                <select class="form-select api-sdk-select" style="appearance:none;-webkit-appearance:none;padding-right:28px;">
+                  <option value="" disabled {% if not cfg.get('sdk') %}selected{% endif %}>请选择 SDK</option>
+                  <option value="DusAPI" {% if cfg.get('sdk') == 'DusAPI' %}selected{% endif %}>DusAPI</option>
+                  <option value="OpenAI API 格式兼容接口" {% if cfg.get('sdk') in ('OpenAI SDK', 'OpenAI API 格式兼容接口') %}selected{% endif %}>OpenAI API 格式兼容接口</option>
+                  <option value="Dify" {% if cfg.get('sdk') == 'Dify' %}selected{% endif %}>Dify</option>
+                  <option value="Coze" {% if cfg.get('sdk') == 'Coze' %}selected{% endif %}>Coze</option>
+                </select>
+                <i class="bi bi-chevron-down" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:11px;color:var(--muted);"></i>
+              </div>
+            </div>
+            <div class="col-12 col-md-3">
+              <label class="cfg-label">模型</label>
+              <input type="text" class="form-control api-model-input" value="{{ cfg.get('model', '') }}" placeholder="模型名称">
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="cfg-label">Base URL</label>
+              <input type="text" class="form-control api-url-input" value="{{ cfg.get('url', '') }}" placeholder="https://api.example.com">
+            </div>
+            <div class="col-12">
+              <label class="cfg-label">API Key</label>
+              {% set _k = cfg.get('key', '') %}{% if _k|length > 10 %}{% set _km = _k[:5] + ('*' * (_k|length - 10)) + _k[-5:] %}{% else %}{% set _km = _k %}{% endif %}
+              <input type="text" class="form-control api-key-input" value="{{ _km }}" data-real-key="{{ _k }}" data-masked="{{ _km }}" placeholder="sk-..." autocomplete="off">
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="cfg-label">备用接口</label>
+              {% set _api_index = loop.index0 %}
+              <select class="form-select api-fallback-select" title="主接口失败时调用一次备用接口">
+                <option value="-1" {% if cfg.get('fallback_api_index', -1)|int == -1 %}selected{% endif %}>无</option>
+                {% for _other_index in range(config.api_configs|length) %}
+                {% if _other_index != _api_index %}
+                <option value="{{ _other_index }}" {% if cfg.get('fallback_api_index', -1)|int == _other_index %}selected{% endif %}>
+                  接口{{ _other_index + 1 }}: {{ config.api_configs[_other_index].get('model', '') }}
+                </option>
+                {% endif %}
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:4px;flex-wrap:wrap;">
+        <button type="button" id="btn-test-api-config" style="flex:0 0 180px;background:var(--card);border:1px solid var(--border);color:var(--card-fg);padding:10px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
+          <i class="bi bi-activity"></i> 测试可用性
+        </button>
+        <button type="button" id="btn-add-api-config" style="flex:1;min-width:220px;background:var(--muted-bg);border:1px dashed var(--border);color:var(--muted);padding:10px;border-radius:6px;font-size:13px;cursor:pointer;">
+          <i class="bi bi-plus-circle"></i> 添加接口配置
+        </button>
+      </div>
+      <div class="cfg-hint" style="margin-top:8px;">点击左侧单选框选择当前使用的接口。不同 SDK 的 API Key、Base URL 和模型填写方式请参考对应服务商文档。</div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Prompt ===== -->
+  <div class="config-panel" id="tab-prompt">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-chat-square-text"></i><h5>Prompt 管理</h5><span class="desc">管理多份 AI 系统提示词</span></div>
+      <div style="padding:10px 14px;background:#fffbe6;border:1px solid #ffe58f;border-radius:6px;color:#856404;font-size:12.5px;line-height:1.8;margin-bottom:16px;">
+        <i class="bi bi-info-circle-fill" style="color:#d97706;margin-right:4px;"></i>
+        Prompt 存储于 <code>config/prompt/</code> 文件夹，每个 <code>.md</code> 文件为一份 Prompt。
+        除在面板中操作外，也可直接在该文件夹中新建 <code>.md</code> 文件，<b>保存配置后刷新页面</b>即可看到。
+      </div>
+      <div class="prompt-two-col">
+        <!-- 左：列表 -->
+        <div class="prompt-list-panel">
+          <div style="font-size:12px;color:var(--muted);font-weight:600;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px;">Prompt 列表</div>
+          <div id="prompt-list" style="flex:1;overflow-y:auto;">
+            {% for p in prompts %}
+            <div class="prompt-list-item {% if loop.first %}active{% endif %}"
+                 data-name="{{ p.name }}"
+                 data-content="{{ p.content | e }}">{{ p.name }}</div>
+            {% endfor %}
+          </div>
+          <button type="button" class="btn-add" id="btn-new-prompt" style="margin-top:12px;justify-content:center;">
+            <i class="bi bi-plus-circle"></i> 新建 Prompt
+          </button>
+        </div>
+        <!-- 右：编辑区 -->
+        <div class="prompt-editor-panel">
+          <div class="mb-2">
+            <label class="cfg-label">Prompt 名称 <span style="font-size:11px;color:var(--muted);font-weight:400;">（将以此命名保存为 .md 文件）</span></label>
+            <input type="text" class="form-control" id="prompt-name-input" placeholder="输入 Prompt 名称，如：客服助手">
+          </div>
+          <div class="mb-3" style="flex:1;display:flex;flex-direction:column;">
+            <label class="cfg-label">Prompt 内容</label>
+            <textarea class="form-control" id="prompt-content-input"
+                      style="flex:1;min-height:260px;font-family:monospace;font-size:13px;resize:vertical;"
+                      placeholder="在此输入 Prompt 正文内容..."></textarea>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;">
+            <button type="button" id="btn-delete-prompt"
+                    style="display:inline-flex;align-items:center;gap:5px;padding:7px 16px;background:var(--card);color:var(--danger);border:1px solid var(--danger);border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;"
+                    onmouseover="this.style.background='#fff0f0'" onmouseout="this.style.background='var(--card)'">
+              <i class="bi bi-trash3"></i> 删除此 Prompt
+            </button>
+            <button type="button" id="btn-save-prompt"
+                    style="display:inline-flex;align-items:center;gap:5px;padding:7px 20px;background:var(--primary);color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;transition:opacity .2s;"
+                    onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+              <i class="bi bi-check2-circle"></i> 保存 Prompt
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Admin ===== -->
+  <div class="config-panel" id="tab-admin">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-shield-lock"></i><h5>管理员设置</h5><span class="desc">设置机器人管理员微信名</span></div>
+      <div class="mb-3">
+        <label class="cfg-label" for="admin">管理员名称</label>
+        <input type="text" class="form-control" id="admin" name="admin" value="{{ config.admin }}">
+        <div class="cfg-hint">填写管理员的微信备注名或昵称</div>
+      </div>
+      <div style="background:#f6ffed;border:1px solid #b7eb8f;border-radius:6px;padding:12px 16px;font-size:13px;color:#444;line-height:1.9;margin-top:4px;">
+        <div style="font-weight:600;color:#389e0d;margin-bottom:4px;"><i class="bi bi-info-circle"></i> 什么是管理员？</div>
+        管理员是机器人微信中的一个好友，通过向机器人账号发送指令消息来进行管理操作（如添加用户、切换模型、查看状态等）。
+        <div style="font-weight:600;color:#389e0d;margin-top:10px;margin-bottom:4px;"><i class="bi bi-lightbulb"></i> 没有第二个微信账号？</div>
+        可以将管理员设置为 <code>文件传输助手</code>。在手机上用当前微信账号向「文件传输助手」发送指令，消息会同步到机器人所在的 PC，机器人即可识别并执行。
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Listen ===== -->
+  <div class="config-panel" id="tab-listen">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-ear"></i><h5>私聊监听</h5><span class="desc">配置需要监听的联系人</span></div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="AllListen_switch" name="AllListen_switch" {% if config.AllListen_switch %}checked{% endif %}>
+        <label for="AllListen_switch">全局监听</label>
+        <span class="switch-desc">开启后监听所有消息，下方列表变为黑名单</span>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="chat_listen_only" name="chat_listen_only" {% if config.get('chat_listen_only', False) %}checked{% endif %}>
+        <label for="chat_listen_only">只监听不 AI 回复</label>
+        <span class="switch-desc">监听、记忆、关键词回复和自定义转发正常运行，但不会调用接口生成私聊 AI 回复</span>
+      </div>
+      <div class="cfg-hint" style="margin-bottom:12px;padding:10px 14px;background:#f0f7ff;border:1px solid #bcd4f5;border-radius:6px;color:#1a5fa8;font-size:12.5px;line-height:1.8;">
+        <i class="bi bi-info-circle" style="color:#2d8cf0;margin-right:4px;"></i>
+        只监听不 AI 回复适合仅存储消息，或为关键词回复、自定义转发提供私聊监听来源。
+      </div>
+      <!-- 全局 Prompt 选择（全局监听模式时显示） -->
+      <div id="global-prompt-row" style="display:{% if config.AllListen_switch %}flex{% else %}none{% endif %};align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;padding:10px 14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;">
+        <label class="cfg-label" style="margin:0;white-space:nowrap;color:#0c4a6e;">全局 Prompt：</label>
+        <select class="form-select" id="default_prompt_select" style="max-width:200px;">
+          {% for p in prompts %}
+          <option value="{{ p.name }}" {% if p.name == config.default_prompt %}selected{% endif %}>{{ p.name }}</option>
+          {% endfor %}
+        </select>
+        <span class="cfg-hint" style="margin:0;color:#0369a1;">接口使用模型配置中的默认选择 &nbsp;·&nbsp; 如新增了 Prompt 未看到，请保存配置后刷新页面</span>
+      </div>
+      <!-- 全局模式过滤免打扰选项（全局监听模式时显示） -->
+      <div id="global-filter-mute-row" style="display:{% if config.AllListen_switch %}flex{% else %}none{% endif %};align-items:center;gap:10px;margin-bottom:12px;padding:10px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;">
+        <input class="form-check-input" type="checkbox" id="AllListen_filter_mute" name="AllListen_filter_mute" {% if config.AllListen_filter_mute %}checked{% endif %} style="margin:0;">
+        <label for="AllListen_filter_mute" style="margin:0;font-size:13px;font-weight:500;color:#78350f;cursor:pointer;">过滤免打扰消息</label>
+        <span class="cfg-hint" style="margin:0;color:#92400e;">开启后将忽略设置了免打扰的会话消息，若开了过滤免打扰后发现全局不接收消息了，请把Windows屏幕缩放设为100%后再重启微信和面板重试</span>
+      </div>
+      <!-- 模式提示条 -->
+      <div id="listenModeHint" class="d-flex align-items-center gap-2 px-3 py-2 rounded mb-3" style="font-size:13px;font-weight:600;{% if config.AllListen_switch %}background:#FEF2F2;color:#DC2626;border:1px solid #FECACA{% else %}background:#F0FDF4;color:#16A34A;border:1px solid #BBF7D0{% endif %}">
+        <i class="bi {% if config.AllListen_switch %}bi-shield-x{% else %}bi-shield-check{% endif %}" style="font-size:16px"></i>
+        <span id="listenModeText">{% if config.AllListen_switch %}当前为黑名单模式 — 以下用户的消息将被忽略{% else %}当前为白名单模式 — 仅监听以下用户的消息{% endif %}</span>
+      </div>
+      <div class="mb-2">
+        <label class="cfg-label" id="listenListLabel">{% if config.AllListen_switch %}黑名单列表{% else %}监听列表 <span style="font-size:11px;color:var(--muted);font-weight:400;">（白名单模式：可为每个用户设置专属 Prompt、接口和回复上限）</span>{% endif %}</label>
+      </div>
+      <div id="listen_container">
+        {% for item in config.listen_list %}
+        <div class="list-item listen-item" style="flex-wrap:wrap;gap:6px;">
+          <input type="text" class="form-control" name="listen_list" value="{{ item }}" placeholder="联系人昵称" style="min-width:120px;">
+          <div class="listen-extra" style="display:{% if not config.AllListen_switch %}flex{% else %}none{% endif %};gap:6px;flex-wrap:wrap;">
+            <select class="form-select chat-prompt-select" style="width:145px;flex-shrink:0;" title="专属Prompt（空=使用全局Prompt）">
+              <option value="">默认（全局）</option>
+              {% for p in prompts %}
+              <option value="{{ p.name }}" {% if config.chat_prompt_map.get(item) == p.name %}selected{% endif %}>{{ p.name }}</option>
+              {% endfor %}
+            </select>
+            <select class="form-select chat-api-select" style="width:160px;flex-shrink:0;" title="专属接口（默认=全局配置接口）">
+              <option value="-1">默认接口</option>
+              {% for cfg in config.api_configs %}
+              <option value="{{ loop.index0 }}" {% if config.chat_api_map.get(item) == loop.index0 %}selected{% endif %}>接口{{ loop.index }}: {{ cfg.model }}</option>
+              {% endfor %}
+            </select>
+            <input type="number" class="form-control chat-max-round-input" min="1" max="99999"
+                   value="{{ config.get('chat_max_round_map', {}).get(item, '') }}"
+                   placeholder="全局上限" title="专属回复上限（留空=全局）" style="width:120px;flex-shrink:0;">
+          </div>
+          <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" id="btn-add-listen-item"><i class="bi bi-plus-circle"></i> <span id="listenAddText">{% if config.AllListen_switch %}添加黑名单{% else %}添加监听{% endif %}</span></button>
+      <div style="margin-top:8px;padding:8px 14px;background:#FEF2F2;border:1px solid #FECACA;border-radius:6px;color:#991B1B;font-size:12.5px;line-height:1.7;">
+        <i class="bi bi-exclamation-triangle-fill" style="color:#DC2626;margin-right:4px;"></i>
+        <strong>此处只能添加私聊联系人，请勿添加群聊。</strong>群聊若添加到此处，会被当作私聊处理，不会遵循群组管理中的规则，可能导致严重错误甚至发错消息。群聊请在「群组管理」页面添加。
+      </div>
+      <div id="special-session-filter-row" style="display:{% if config.AllListen_switch %}block{% else %}none{% endif %};">
+        <hr>
+        <div class="mb-2">
+          <label class="cfg-label">特殊会话过滤名单</label>
+        </div>
+        <div id="special_session_name_container">
+          {% for item in config.get('special_session_name', []) %}
+          <div class="list-item">
+            <input type="text" class="form-control" name="special_session_name" value="{{ item }}" placeholder="会话名称">
+            <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+          </div>
+          {% endfor %}
+        </div>
+        <button type="button" class="btn-add" data-target="#special_session_name_container" data-name="special_session_name" data-placeholder="会话名称"><i class="bi bi-plus-circle"></i> 添加过滤会话</button>
+        <div style="margin-top:8px;padding:9px 14px;background:#f0f7ff;border:1px solid #bcd4f5;border-radius:6px;color:#1a5fa8;font-size:12.5px;line-height:1.8;">
+          <i class="bi bi-info-circle" style="color:#2d8cf0;margin-right:4px;"></i>
+          用于全局监听时过滤既非私聊、也非群聊的特殊会话。这类会话点开后可能进入二级页面，导致整个全局监听卡住；发现后可将会话名称加入此名单。
+          常见项有：<strong>服务号</strong>、<strong>公众号</strong>（这两项已默认内置，无需重复添加）、<strong>客服消息</strong>、<strong>(企微消息)</strong>（个人微信中关注的企业微信企业发来的消息）。
+        </div>
+      </div>
+      <hr>
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          <input class="form-check-input" type="checkbox" id="chat_image_recognition_switch"
+                 name="chat_image_recognition_switch"
+                 {% if config.chat_image_recognition_switch %}checked{% endif %}
+                 onchange="toggleChatImgApi(this.checked)">
+          <label for="chat_image_recognition_switch" style="font-weight:600;cursor:pointer;">启用私聊图片、语音识别</label>
+        </div>
+        <div id="chat_img_api_row" style="display:{% if config.chat_image_recognition_switch %}flex{% else %}none{% endif %};align-items:center;gap:8px;flex-wrap:wrap;">
+          <label style="font-size:13px;white-space:nowrap;margin:0;">识别图片接口:</label>
+          <select class="form-select" id="chat_image_recognition_api" name="chat_image_recognition_api" style="width:210px;">
+            {% for cfg in config.api_configs %}
+            <option value="{{ loop.index0 }}"
+              {% if config.chat_image_recognition_api == loop.index0 %}selected{% endif %}>
+              接口{{ loop.index }}: {{ cfg.model }}
+            </option>
+            {% endfor %}
+          </select>
+          <span class="cfg-hint" style="margin:0;">如新增了接口但未看到，请保存配置后刷新页面</span>
+        </div>
+      </div>
+      <div style="padding:9px 14px;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;color:#92400e;font-size:12.5px;line-height:1.8;">
+        <i class="bi bi-exclamation-triangle" style="color:#d97706;margin-right:4px;"></i>
+        <strong>图片识别：</strong>需选择支持视觉输入的接口和模型，支持兼容 OpenAI 视觉格式的接口。
+        支持<strong>直接发送</strong>的图片及<strong>引用图片</strong>的识别。
+        遇到图片下载、保存或识图相关报错时，请尝试：将 <strong>Windows 屏幕缩放设置为 100%</strong>，并将<strong>微信字体保持标准大小</strong>后重试。
+        <br><strong>语音识别：</strong>开启后会自动调用微信的语音消息转文字功能，仅能识别普通话。如果提示转文字失败，请在微信设置 → 通用 → 聊天中，将「语音消息自动转成文字」功能打开。
+      </div>
+      <hr>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="chat_split_reply_switch"
+               {% if config.get('chat_split_reply_switch', False) %}checked{% endif %}
+               onchange="toggleChatSplitReply(this.checked)">
+        <label for="chat_split_reply_switch" style="font-weight:600;cursor:pointer;">启用拆分多条回复</label>
+        <span class="switch-desc">AI 将自主决定是否将回复拆分为多条消息逐条发送，模拟真人聊天</span>
+      </div>
+      <div id="chat_split_settings" style="{% if not config.get('chat_split_reply_switch', False) %}display:none;{% endif %}">
+        <div class="row g-3" style="margin-bottom:10px;">
+          <div class="col-6">
+            <label class="cfg-label" for="chat_split_max_chars">单条最大字数</label>
+            <input type="number" class="form-control" id="chat_split_max_chars" min="10" max="2000"
+                   value="{{ config.get('chat_split_max_chars', 100) }}" placeholder="100">
+            <div class="cfg-hint">AI 每条回复不超过此字数</div>
+          </div>
+          <div class="col-6">
+            <label class="cfg-label" for="chat_split_max_count">最多发送条数</label>
+            <input type="number" class="form-control" id="chat_split_max_count" min="1" max="10"
+                   value="{{ config.get('chat_split_max_count', 4) }}" placeholder="4">
+            <div class="cfg-hint">单次回复最多拆分为几条</div>
+          </div>
+        </div>
+        <div style="padding:9px 14px;background:#f0f7ff;border:1px solid #bcd4f5;border-radius:6px;color:#1a5fa8;font-size:12.5px;line-height:1.8;">
+          <i class="bi bi-info-circle" style="color:#2d8cf0;margin-right:4px;"></i>
+          此功能通过在 Prompt 中注入格式指令，让 AI 自主决定是否拆分及条数，每条之间加入发送延迟模拟真人。<br>
+          <strong>仅适用于支持自定义 Prompt 的接口</strong>；Coze / Dify 等工作流类接口已在平台侧固化逻辑，此功能可能无效。<br>
+          💡 单条字数限制越小、最多发送条数设置越多，拆分概率越大；反之字数限制越高、条数越少，拆分为多条的概率越低。<br>
+          ⚠️ <strong>最终效果取决于模型能力与你的 Prompt</strong>：分不分开发送、怎么分，完全由模型自主决策，面板只是给出参数提示。模型智商越高、理解能力越强，少写点 Prompt 它就能领会；模型智商低，写再多也未必管用。我们无法干预模型内部的决策逻辑——<strong>想要更好的拆分效果，请在自己的 Prompt 里明确写出拆分规则和示例</strong>，反复调教、多次测试，才能找到最适合你当前模型和接口的最佳姿势。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Group ===== -->
+  <div class="config-panel" id="tab-group">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-people"></i><h5>群组管理</h5><span class="desc">配置群聊相关功能</span></div>
+      <div style="margin-bottom:12px;padding:8px 14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;color:#0c4a6e;font-size:12.5px;line-height:1.7;">
+        <i class="bi bi-info-circle-fill" style="color:#0284c7;margin-right:4px;"></i>
+        需要添加群组？<strong>「添加群组」按钮在本页面底部</strong>，向下滚动即可找到。
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="group_switch" name="group_switch" {% if config.group_switch %}checked{% endif %}>
+        <label for="group_switch">启用群聊监听/回复</label>
+        <span class="switch-desc">关闭后群组列表不会注册监听；开启只监听模式后仅监听不调用 AI 回复</span>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="group_listen_only" name="group_listen_only" {% if config.get('group_listen_only', False) %}checked{% endif %}>
+        <label for="group_listen_only">只监听不 AI 回复</label>
+        <span class="switch-desc">监听、记忆、关键词回复和自定义转发正常运行，但不会调用接口生成群聊 AI 回复</span>
+      </div>
+      <div class="cfg-hint" style="margin-bottom:12px;padding:10px 14px;background:#f0f7ff;border:1px solid #bcd4f5;border-radius:6px;color:#1a5fa8;font-size:12.5px;line-height:1.8;">
+        <i class="bi bi-info-circle" style="color:#2d8cf0;margin-right:4px;"></i>
+        只监听不 AI 回复适合仅存储群消息，或为关键词回复、自定义转发提供群聊监听来源。
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="group_reply_at" name="group_reply_at" {% if config.group_reply_at %}checked{% endif %}>
+        <label for="group_reply_at">仅@时回复</label>
+        <span class="switch-desc">仅在被@时才回复群消息</span>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="group_reply_at_msg" name="group_reply_at_msg" {% if config.group_reply_at_msg %}checked{% endif %}>
+        <label for="group_reply_at_msg">回复时@发言人</label>
+        <span class="switch-desc">回复群消息时@发言人</span>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="group_reply_quote" name="group_reply_quote" {% if config.group_reply_quote %}checked{% endif %}>
+        <label for="group_reply_quote">回复时引用消息</label>
+        <span class="switch-desc">回复群消息时引用原消息（首条引用）</span>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="group_welcome" name="group_welcome" {% if config.group_welcome %}checked{% endif %}>
+        <label for="group_welcome">入群欢迎</label>
+      </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="group_welcome_random">随机欢迎概率</label>
+        <div class="d-flex align-items-center gap-3">
+          <input type="range" class="form-range flex-grow-1" id="group_welcome_random" name="group_welcome_random" min="0" max="1" step="0.01" value="{{ config.group_welcome_random }}">
+          <span id="group_welcome_random_number" style="min-width:48px;text-align:center;font-weight:600;">{{ (config.group_welcome_random * 100) | int }}%</span>
+        </div>
+      </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="group_welcome_msg">欢迎消息</label>
+        <textarea id="group_welcome_msg" name="group_welcome_msg">{{ config.group_welcome_msg }}</textarea>
+      </div>
+      <hr>
+      <label class="cfg-label">群组监听列表</label>
+      <div class="cfg-hint" style="margin-bottom:10px;padding:10px 14px;background:#f0f7ff;border:1px solid #bcd4f5;border-radius:6px;color:#1a5fa8;font-size:12.5px;line-height:1.8;">
+        <i class="bi bi-info-circle" style="color:#2d8cf0;"></i>
+        <strong>群组专属 Prompt 和接口</strong>：每个群聊可单独选择调用的 AI 接口和 Prompt，实现一个面板管理多个不同群聊场景。<br>
+        选择 <strong>默认</strong> 则跟随「模型配置」或全局 Prompt；如新增了接口或 Prompt 但未看到，请保存配置后刷新页面。
+      </div>
+      <div id="group_container">
+        {% for g in config.group %}
+        <div class="list-item" style="flex-wrap:wrap;gap:6px;">
+          <input type="text" class="form-control" name="group" value="{{ g }}" placeholder="群聊名称">
+          <select class="form-select group-prompt-select" style="width:145px;flex-shrink:0;" title="该群专属Prompt（空=使用全局Prompt）">
+            <option value="">默认（全局）</option>
+            {% for p in prompts %}
+            <option value="{{ p.name }}" {% if config.group_prompt_map.get(g) == p.name %}selected{% endif %}>{{ p.name }}</option>
+            {% endfor %}
+          </select>
+          <select class="form-select group-api-select" style="width:160px;flex-shrink:0;" title="该群调用的AI接口（选默认则跟随全局配置）">
+            <option value="-1" {% if config.group_api_map.get(g) is none or config.group_api_map.get(g) == -1 %}selected{% endif %}>默认接口</option>
+            {% for cfg in config.api_configs %}
+            <option value="{{ loop.index0 }}" {% if config.group_api_map.get(g) == loop.index0 %}selected{% endif %}>接口{{ loop.index }}: {{ cfg.model }}</option>
+            {% endfor %}
+          </select>
+          <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" id="btn-add-group-item"><i class="bi bi-plus-circle"></i> 添加群组</button>
+      <hr>
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          <input class="form-check-input" type="checkbox" id="group_image_recognition_switch"
+                 name="group_image_recognition_switch"
+                 {% if config.group_image_recognition_switch %}checked{% endif %}
+                 onchange="toggleGroupImgApi(this.checked)">
+          <label for="group_image_recognition_switch" style="font-weight:600;cursor:pointer;">启用群组图片、语音识别</label>
+        </div>
+        <div id="group_img_api_row" style="display:{% if config.group_image_recognition_switch %}flex{% else %}none{% endif %};align-items:center;gap:8px;flex-wrap:wrap;">
+          <label style="font-size:13px;white-space:nowrap;margin:0;">识别图片接口:</label>
+          <select class="form-select" id="group_image_recognition_api" name="group_image_recognition_api" style="width:210px;">
+            {% for cfg in config.api_configs %}
+            <option value="{{ loop.index0 }}"
+              {% if config.group_image_recognition_api == loop.index0 %}selected{% endif %}>
+              接口{{ loop.index }}: {{ cfg.model }}
+            </option>
+            {% endfor %}
+          </select>
+          <span class="cfg-hint" style="margin:0;">如新增了接口但未看到，请保存配置后刷新页面</span>
+        </div>
+      </div>
+      <div style="padding:9px 14px;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;color:#92400e;font-size:12.5px;line-height:1.8;">
+        <i class="bi bi-exclamation-triangle" style="color:#d97706;margin-right:4px;"></i>
+        图片识别需选择支持视觉输入的接口和模型，支持兼容 OpenAI 视觉格式的接口。
+        支持<strong>直接发送</strong>的图片及<strong>引用图片</strong>的识别。
+        遇到图片下载、保存或识图相关报错时，请尝试：将 <strong>Windows 屏幕缩放设置为 100%</strong>，并将<strong>微信字体保持标准大小</strong>后重试。
+        <br><strong>语音识别：</strong>开启后会自动调用微信的语音消息转文字功能，仅能识别普通话。如果提示转文字失败，请在微信设置 → 通用 → 聊天中，将「语音消息自动转成文字」功能打开。
+      </div>
+      <hr>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="group_split_reply_switch"
+               {% if config.get('group_split_reply_switch', False) %}checked{% endif %}
+               onchange="toggleGroupSplitReply(this.checked)">
+        <label for="group_split_reply_switch" style="font-weight:600;cursor:pointer;">启用拆分多条回复</label>
+        <span class="switch-desc">AI 将自主决定是否将回复拆分为多条消息，首条 @ 发言人，后续条不 @</span>
+      </div>
+      <div id="group_split_settings" style="{% if not config.get('group_split_reply_switch', False) %}display:none;{% endif %}">
+        <div class="row g-3" style="margin-bottom:10px;">
+          <div class="col-6">
+            <label class="cfg-label" for="group_split_max_chars">单条最大字数</label>
+            <input type="number" class="form-control" id="group_split_max_chars" min="10" max="2000"
+                   value="{{ config.get('group_split_max_chars', 100) }}" placeholder="100">
+            <div class="cfg-hint">AI 每条回复不超过此字数</div>
+          </div>
+          <div class="col-6">
+            <label class="cfg-label" for="group_split_max_count">最多发送条数</label>
+            <input type="number" class="form-control" id="group_split_max_count" min="1" max="10"
+                   value="{{ config.get('group_split_max_count', 4) }}" placeholder="4">
+            <div class="cfg-hint">单次回复最多拆分为几条</div>
+          </div>
+        </div>
+        <div style="padding:9px 14px;background:#f0f7ff;border:1px solid #bcd4f5;border-radius:6px;color:#1a5fa8;font-size:12.5px;line-height:1.8;">
+          <i class="bi bi-info-circle" style="color:#2d8cf0;margin-right:4px;"></i>
+          此功能通过在 Prompt 中注入格式指令，让 AI 自主决定是否拆分及条数，每条之间加入发送延迟模拟真人。群聊模式下首条消息 @ 发言人，后续条不重复 @。<br>
+          <strong>仅适用于支持自定义 Prompt 的接口</strong>；Coze / Dify 等工作流类接口已在平台侧固化逻辑，此功能可能无效。<br>
+          💡 单条字数限制越小、最多发送条数设置越多，拆分概率越大；反之字数限制越高、条数越少，拆分为多条的概率越低。<br>
+          ⚠️ <strong>最终效果取决于模型能力与你的 Prompt</strong>：分不分开发送、怎么分，完全由模型自主决策，面板只是给出参数提示。模型智商越高、理解能力越强，少写点 Prompt 它就能领会；模型智商低，写再多也未必管用。我们无法干预模型内部的决策逻辑——<strong>想要更好的拆分效果，请在自己的 Prompt 里明确写出拆分规则和示例</strong>，反复调教、多次测试，才能找到最适合你当前模型和接口的最佳姿势。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Friend ===== -->
+  <div class="config-panel" id="tab-friend">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-person-plus"></i><h5>好友管理</h5><span class="desc">新好友自动通过与自动回复设置</span></div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="new_friend_switch" name="new_friend_switch" {% if config.new_friend_switch %}checked{% endif %}>
+        <label for="new_friend_switch">自动通过新好友申请</label>
+      </div>
+      <div class="row g-2 mt-1 mb-1">
+        <div class="col-12"><label class="cfg-label">随机检查间隔</label></div>
+        <div class="col-auto d-flex align-items-center gap-2">
+          <span style="font-size:13px;color:var(--muted);">最短</span>
+          <input type="number" class="form-control" id="new_friend_check_min" name="new_friend_check_min" min="60" max="3600" value="{{ config.new_friend_check_min|default(60) }}" style="width:90px;">
+          <span style="font-size:13px;color:var(--muted);">秒 &nbsp; 最长</span>
+          <input type="number" class="form-control" id="new_friend_check_max" name="new_friend_check_max" min="60" max="3600" value="{{ config.new_friend_check_max|default(300) }}" style="width:90px;">
+          <span style="font-size:13px;color:var(--muted);">秒</span>
+        </div>
+        <div class="col-12"><div class="cfg-hint">随机间隔范围 60 ~ 3600 秒，默认 60 ~ 300 秒</div></div>
+      </div>
+      <div class="row g-2 mb-3">
+        <div class="col-12"><label class="cfg-label">通过后自动设置备注</label></div>
+        <div class="col-12 d-flex align-items-center gap-3 flex-wrap" style="padding:10px 12px;border:1px solid var(--border);border-radius:6px;background:var(--muted-bg);">
+          <label class="d-inline-flex align-items-center gap-2" for="new_friend_remark_use_nickname" style="font-size:13px;color:var(--card-fg);font-weight:600;margin:0;cursor:pointer;">
+            <input class="form-check-input" type="checkbox" id="new_friend_remark_use_nickname" name="new_friend_remark_use_nickname" {% if config.get('new_friend_remark_use_nickname', True) %}checked{% endif %}>
+            采用新好友昵称
+          </label>
+          <span style="font-size:12px;color:var(--muted);">关闭后仅使用前缀、后缀和时间戳生成备注</span>
+        </div>
+        <div class="col-12 d-flex align-items-end gap-2 flex-wrap">
+          <div style="min-width:190px;flex:1 1 220px;">
+            <label class="cfg-label" for="new_friend_remark_prefix">前缀</label>
+            <div class="inline-check-field">
+              <input type="text" class="form-control" id="new_friend_remark_prefix" name="new_friend_remark_prefix" placeholder="（留空）" value="{{ config.new_friend_remark_prefix|default('') }}">
+              <label class="inline-check-suffix" for="new_friend_remark_prefix_timestamp">
+                <input class="form-check-input" type="checkbox" id="new_friend_remark_prefix_timestamp" name="new_friend_remark_prefix_timestamp" {% if config.get('new_friend_remark_prefix_timestamp', False) %}checked{% endif %}>
+                加时间戳
+              </label>
+            </div>
+          </div>
+          <div style="min-width:190px;flex:1 1 220px;">
+            <label class="cfg-label" for="new_friend_remark_suffix">后缀</label>
+            <div class="inline-check-field">
+              <input type="text" class="form-control" id="new_friend_remark_suffix" name="new_friend_remark_suffix" placeholder="_机器人备注" value="{{ config.new_friend_remark_suffix|default('_机器人备注') }}">
+              <label class="inline-check-suffix" for="new_friend_remark_suffix_timestamp">
+                <input class="form-check-input" type="checkbox" id="new_friend_remark_suffix_timestamp" name="new_friend_remark_suffix_timestamp" {% if config.get('new_friend_remark_suffix_timestamp', False) %}checked{% endif %}>
+                加时间戳
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="col-12"><div class="cfg-hint">备注格式：前缀时间戳 + 前缀 + 新好友昵称 + 后缀 + 后缀时间戳。微信备注最长约 32 个单位，超出会自动裁剪，中文约占 2 个单位。</div></div>
+      </div>
+      <div class="row g-2 mb-3">
+        <div class="col-12"><label class="cfg-label">通过后自动设置标签</label><span class="cfg-hint" style="margin-left:8px;">⚠️ 只能填写微信中已存在的标签，填写不存在的标签将无效</span></div>
+        <div id="new_friend_tags_container">
+          {% for tag in config.new_friend_tags %}
+          <div class="list-item">
+            <input type="text" class="form-control" name="new_friend_tags" value="{{ tag }}" placeholder="标签名">
+            <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+          </div>
+          {% endfor %}
+        </div>
+        <button type="button" class="btn-add" data-target="#new_friend_tags_container" data-name="new_friend_tags"><i class="bi bi-plus-circle"></i> 添加标签</button>
+        <div class="col-12"><div class="cfg-hint">可添加多个标签，通过好友时自动设置</div></div>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="new_friend_reply_switch" name="new_friend_reply_switch" {% if config.new_friend_reply_switch %}checked{% endif %}>
+        <label for="new_friend_reply_switch">新好友自动回复</label>
+      </div>
+      <div class="cfg-hint" style="margin-bottom:8px;"><i class="bi bi-image" style="color:var(--primary);"></i> 填写文字内容将发送文字；填写文件完整路径（图片/视频/文档/压缩包等，如 <code>C:\文件\报告.pdf</code>）将自动作为文件发送</div>
+      <div id="new_friend_msg_container">
+        {% for msg in config.new_friend_msg %}
+        <div class="list-item">
+          <textarea class="form-control" name="new_friend_msg" rows="2" placeholder="文字内容 或 文件完整路径（图片/视频/文档等）">{{ msg }}</textarea>
+          <button type="button" class="btn-pick-img" data-pick-kind="file" title="点击选择本地文件（图片/视频/文档等），自动填入路径"><i class="bi bi-folder2-open"></i></button>
+          <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" data-target="#new_friend_msg_container" data-name="new_friend_msg" data-imgpick="1" data-multiline="1"><i class="bi bi-plus-circle"></i> 添加消息</button>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Keyword ===== -->
+  <div class="config-panel" id="tab-keyword">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-key"></i><h5>关键词回复</h5><span class="desc">设置关键词自动回复规则</span></div>
+      <div class="cfg-hint" style="margin-bottom:14px;padding:10px 14px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;color:#9a3412;font-size:12.5px;line-height:1.8;">
+        <i class="bi bi-exclamation-triangle-fill" style="color:#ea580c;margin-right:4px;"></i>
+        关键词监听来源依托于「私聊监听」和「群组管理」中设置的监听对象，请先在对应页面配置监听对象后再使用。若只需要关键词回复、记忆或转发，不需要 AI 自动回复，请在对应监听页面勾选「只监听不 AI 回复」。
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="chat_keyword_switch" name="chat_keyword_switch" {% if config.chat_keyword_switch %}checked{% endif %}>
+        <label for="chat_keyword_switch">私聊关键词回复</label>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="group_keyword_switch" name="group_keyword_switch" {% if config.group_keyword_switch %}checked{% endif %}>
+        <label for="group_keyword_switch">群聊关键词回复</label>
+      </div>
+      <div class="sub-switch-row">
+        <input class="form-check-input" type="checkbox" id="group_keyword_at_only" name="group_keyword_at_only" {% if config.group_keyword_at_only %}checked{% endif %}>
+        <label for="group_keyword_at_only">仅在被 @ 时触发群聊关键词回复</label>
+      </div>
+      <div class="sub-switch-row">
+        <input class="form-check-input" type="checkbox" id="group_keyword_reply_at_msg" name="group_keyword_reply_at_msg" {% if config.get('group_keyword_reply_at_msg', False) %}checked{% endif %}>
+        <label for="group_keyword_reply_at_msg">群聊关键词回复时 @ 发言人</label>
+        <span class="switch-desc">仅群聊关键词回复生效</span>
+      </div>
+      <div class="sub-switch-row">
+        <input class="form-check-input" type="checkbox" id="keyword_reply_quote" name="keyword_reply_quote" {% if config.get('keyword_reply_quote', config.get('group_keyword_reply_quote', False)) %}checked{% endif %}>
+        <label for="keyword_reply_quote">关键词回复时引用消息</label>
+        <span class="switch-desc">私聊关键词和群聊关键词同步生效，引用失败时自动降级普通发送</span>
+      </div>
+      <div id="keyword_container">
+        {% for key, value in config.keyword_dict.items() %}
+        <div class="keyword-item">
+          <input type="text" class="form-control" name="keyword_key" value="{{ key }}" placeholder="关键词">
+          <textarea class="form-control" name="keyword_value" placeholder="回复内容，或文件完整路径（图片/视频/文档等）">{{ value }}</textarea>
+          <button type="button" class="btn-pick-img" data-pick-target="textarea[name=keyword_value]" data-pick-kind="file" title="点击选择本地文件（图片/视频/文档等），自动填入路径"><i class="bi bi-folder2-open"></i></button>
+          <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" id="btn-add-keyword"><i class="bi bi-plus-circle"></i> 添加关键词</button>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Custom Forward ===== -->
+  <div class="config-panel" id="tab-forward">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-share"></i><h5>自定义规则转发</h5><span class="desc">监听指定来源，按规则将消息转发给目标</span></div>
+      <div class="cfg-hint" style="margin-bottom:14px;padding:10px 14px;background:#fffbe6;border:1px solid #ffe58f;border-radius:6px;color:#856404;font-size:12.5px;line-height:1.7;">
+        <b>功能说明：</b>监听指定来源窗口，当消息满足触发条件时自动转发给目标。<br>
+        <b>关键词转发</b>：消息内容包含任意关键词时触发 ｜ <b>固定发送人转发</b>：消息的发送人匹配时触发 ｜ <b>无差别转发</b>：所有消息均转发<br>
+        <b>注意：</b>若规则勾选「全部来源」，来源依托于「私聊监听」和「群组管理」中设置的监听对象，请先在对应页面配置监听对象后再使用。若不需要 AI 自动回复，请在对应监听页面勾选「只监听不 AI 回复」。
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="custom_forward_switch" name="custom_forward_switch" {% if config.custom_forward_switch %}checked{% endif %}>
+        <label for="custom_forward_switch">启用自定义规则转发</label>
+      </div>
+      <div id="custom_forward_container">
+        {% for rule in config.custom_forward_list %}
+        <div class="custom-forward-item" data-rule-id="{{ rule.id }}">
+          <div class="d-flex align-items-center justify-content-between mb-3">
+            <span style="font-size:13px;font-weight:600;color:var(--primary);">转发规则</span>
+            <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+          </div>
+          <!-- 监听来源 -->
+          <div class="mb-3">
+            <label class="cfg-label">监听来源 <span style="font-size:11px;color:var(--primary);font-weight:400;">（填入微信联系人昵称或群名，可添加多个）</span></label>
+            <div class="switch-row" style="margin-bottom:8px;">
+              <input class="form-check-input fwd-all-sources" type="checkbox"
+                     {% if rule.get('all_sources', False) %}checked{% endif %}
+                     onchange="toggleFwdAllSources(this)">
+              <label style="font-size:13px;font-weight:600;cursor:pointer;">全部来源</label>
+              <span class="switch-desc">所有已监听的私聊和群组均作为来源，无需逐一填写</span>
+            </div>
+            <div class="fwd-manual-sources" style="{% if rule.get('all_sources', False) %}display:none;{% endif %}">
+              <div class="fwd-source-list">
+                {% for src in rule.sources %}
+                <div class="list-item" style="margin-bottom:6px;">
+                  <input type="text" class="form-control" name="fwd_source" value="{{ src }}" placeholder="联系人昵称或群名">
+                  <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+                </div>
+                {% endfor %}
+              </div>
+              <button type="button" class="btn-add btn-add-fwd-source" style="margin-top:6px;"><i class="bi bi-plus-circle"></i> 添加来源</button>
+            </div>
+          </div>
+          <!-- 转发类型 -->
+          <div class="mb-3">
+            <label class="cfg-label">转发类型 <span style="font-size:11px;color:var(--muted);font-weight:400;">（选择消息触发转发的条件类型）</span></label>
+            <select class="form-select fwd-type-select" style="max-width:260px;">
+              <option value="keyword" {% if rule.type == 'keyword' %}selected{% endif %}>关键词转发</option>
+              <option value="all" {% if rule.type == 'all' %}selected{% endif %}>无差别转发</option>
+              <option value="sender" {% if rule.type == 'sender' %}selected{% endif %}>固定发送人转发</option>
+            </select>
+          </div>
+          <!-- 关键词列表（type=keyword 时显示） -->
+          <div class="fwd-conditional-block fwd-keyword-block mb-3" {% if rule.type == 'keyword' %}style="display:block;"{% endif %}>
+            <label class="cfg-label">关键词列表 <span style="font-size:11px;color:var(--primary);font-weight:400;">（消息内容包含任意一个关键词即触发转发）</span></label>
+            <div class="fwd-kw-list">
+              {% for kw in rule.keywords %}
+              <div class="list-item" style="margin-bottom:6px;">
+                <input type="text" class="form-control" name="fwd_keyword" value="{{ kw }}" placeholder="关键词">
+                <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+              </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="btn-add btn-add-fwd-kw" style="margin-top:6px;"><i class="bi bi-plus-circle"></i> 添加关键词</button>
+          </div>
+          <!-- 发送人列表（type=sender 时显示） -->
+          <div class="fwd-conditional-block fwd-sender-block mb-3" {% if rule.type == 'sender' %}style="display:block;"{% endif %}>
+            <label class="cfg-label">发送人列表 <span style="font-size:11px;color:var(--primary);font-weight:400;">（填入微信昵称，仅该发送人的消息才触发转发）</span></label>
+            <div class="fwd-sender-list">
+              {% for sd in rule.senders %}
+              <div class="list-item" style="margin-bottom:6px;">
+                <input type="text" class="form-control" name="fwd_sender" value="{{ sd }}" placeholder="发送人昵称">
+                <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+              </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="btn-add btn-add-fwd-sender" style="margin-top:6px;"><i class="bi bi-plus-circle"></i> 添加发送人</button>
+          </div>
+          <!-- 转发目标 -->
+          <div class="mb-1">
+            <label class="cfg-label">转发目标 <span style="font-size:11px;color:var(--primary);font-weight:400;">（填入联系人昵称或群名，可添加多个，每次转发间隔 1 秒）</span></label>
+            <div class="fwd-target-list">
+              {% for tgt in rule.targets %}
+              <div class="list-item" style="margin-bottom:6px;">
+                <input type="text" class="form-control" name="fwd_target" value="{{ tgt }}" placeholder="联系人昵称或群名">
+                <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+              </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="btn-add btn-add-fwd-target" style="margin-top:6px;"><i class="bi bi-plus-circle"></i> 添加转发目标</button>
+            <div class="switch-row" style="margin-top:10px;margin-bottom:0;">
+              <input class="form-check-input fwd-with-source" type="checkbox" {% if rule.forward_with_source %}checked{% endif %}>
+              <label style="font-size:13px;">转发时附带来源信息 <span style="font-size:11px;color:var(--muted);font-weight:400;">（转发消息后自动补发一条"来源窗口：xxx，发送人：xxx"）</span></label>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" id="btn-add-forward-rule" style="margin-top:4px;"><i class="bi bi-plus-circle"></i> 添加转发规则</button>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Schedule ===== -->
+  <div class="config-panel" id="tab-schedule">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-alarm"></i><h5>定时消息</h5><span class="desc">配置定时发送的消息任务</span></div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="scheduled_msg_switch" name="scheduled_msg_switch" {% if config.scheduled_msg_switch %}checked{% endif %}>
+        <label for="scheduled_msg_switch">启用定时消息</label>
+      </div>
+      <div id="scheduled_msg_container">
+        {% for item in config.scheduled_msg_list %}
+        <div class="scheduled-msg-item" data-task-id="{{ item.id }}">
+          <div class="d-flex align-items-center justify-content-between mb-3">
+            <div class="switch-row" style="margin-bottom:0;flex:1">
+              <input class="form-check-input scheduled-enabled" type="checkbox" {% if item.enabled %}checked{% endif %}>
+              <label>启用此任务</label>
+            </div>
+            <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">发送目标 <span style="font-size:11px;color:var(--primary);font-weight:400;">（可添加多个，同一批消息将依次发给每个目标，用于群发）</span></label>
+            <div class="scheduled-target-list">
+              {% set _targets = item.get('targets', [item.target] if item.get('target') else []) %}
+              {% for t in _targets %}
+              <div class="list-item" style="margin-bottom:6px;">
+                <input type="text" class="form-control" name="scheduled_target" value="{{ t }}" placeholder="联系人或群名">
+                <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+              </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="btn-add btn-add-scheduled-target" style="margin-top:6px;"><i class="bi bi-plus-circle"></i> 添加目标</button>
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">发送时间</label>
+            <input type="time" class="form-control" name="scheduled_time" value="{{ item.time }}">
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">重复类型</label>
+            <select class="form-select scheduled-repeat-type">
+              <option value="daily" {% if item.repeat_type == 'daily' %}selected{% endif %}>每天</option>
+              <option value="weekly" {% if item.repeat_type == 'weekly' %}selected{% endif %}>每周</option>
+              <option value="monthly" {% if item.repeat_type == 'monthly' %}selected{% endif %}>每月</option>
+              <option value="once" {% if item.repeat_type == 'once' %}selected{% endif %}>单次</option>
+              <option value="custom" {% if item.repeat_type == 'custom' %}selected{% endif %}>自定义日期</option>
+            </select>
+          </div>
+          <div class="gap-2 mb-2 scheduled-weekdays" style="{% if item.repeat_type == 'weekly' %}display:flex{% else %}display:none{% endif %}">
+            {% set days = ['一','二','三','四','五','六','日'] %}
+            {% for d in range(1,8) %}
+            <span class="weekday-btn {% if d|string in item.get('weekdays',[]) or d in item.get('weekdays',[]) %}active{% endif %}" data-day="{{ d }}">{{ days[d-1] }}</span>
+            <input type="checkbox" class="weekday-check d-none" value="{{ d }}" {% if d|string in item.get('weekdays',[]) or d in item.get('weekdays',[]) %}checked{% endif %}>
+            {% endfor %}
+          </div>
+          <div class="mb-2 scheduled-monthly-days" style="{% if item.repeat_type != 'monthly' %}display:none{% endif %}">
+            <input type="text" class="form-control monthly-days" value="{{ item.dates | join(',') }}" placeholder="如：1,15 表示每月1号和15号">
+          </div>
+          <div class="mb-2 scheduled-date" style="{% if item.repeat_type not in ['once','custom'] %}display:none{% endif %}">
+            <input type="{% if item.repeat_type == 'once' %}date{% else %}text{% endif %}" class="form-control date-input" value="{{ item.dates | join(',') }}" placeholder="2026-03-20">
+          </div>
+          <label class="cfg-label">消息内容</label>
+          <div class="cfg-hint" style="margin-bottom:8px;"><i class="bi bi-image" style="color:var(--primary);"></i> 填写文字内容将发送文字；填写文件完整路径（图片/视频/文档/压缩包等，如 <code>C:\文件\报告.pdf</code>）将自动作为文件发送</div>
+          <div class="scheduled-msg-list">
+            {% for msg in item.msgs %}
+            <div class="list-item">
+              <textarea class="form-control" name="scheduled_msg" rows="2" placeholder="文字内容 或 文件完整路径（图片/视频/文档等）">{{ msg }}</textarea>
+              <button type="button" class="btn-pick-img" data-pick-kind="file" title="点击选择本地文件（图片/视频/文档等），自动填入路径"><i class="bi bi-folder2-open"></i></button>
+              <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+            </div>
+            {% endfor %}
+          </div>
+          <button type="button" class="btn-add btn-add-scheduled-msg"><i class="bi bi-plus-circle"></i> 添加消息</button>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" id="btn-add-scheduled-task"><i class="bi bi-plus-circle"></i> 添加定时任务</button>
+    </div>
+
+    <!-- 随机定时消息 -->
+    <div class="cfg-card" style="margin-top:20px;">
+      <div class="cfg-card-header"><i class="bi bi-shuffle"></i><h5>随机定时消息</h5><span class="desc">时间窗口内随机选时发送，避免固定规律</span></div>
+      <div class="cfg-hint" style="margin-bottom:14px;padding:10px 14px;background:#f3f0ff;border:1px solid #c9b8ff;border-radius:6px;color:#4a1fa8;font-size:12.5px;line-height:1.9;">
+        <i class="bi bi-info-circle" style="color:#7c4dff;"></i>
+        <strong>功能说明：</strong>在设定的时间窗口内随机挑选一个时刻向指定目标发送消息，避免每天定点发送被发现规律。<br>
+        每周模式随机抽取指定天数（如设5天，则本周随机选5天发送，其余天跳过）；每月同理。<br>
+        <strong>⚠️ 注意：</strong>需要启动机器人后才会生效；每个任务每天最多触发一次。
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="random_msg_switch" name="random_msg_switch" {% if config.random_msg_switch %}checked{% endif %}>
+        <label for="random_msg_switch">启用随机定时消息</label>
+      </div>
+      <div id="random_msg_container">
+        {% for item in config.random_msg_list %}
+        <div class="random-msg-item" data-rmsgid="{{ item.id }}">
+          <div class="d-flex align-items-center justify-content-between mb-3">
+            <div class="switch-row" style="margin-bottom:0;flex:1">
+              <input class="form-check-input rmsg-enabled" type="checkbox" {% if item.enabled %}checked{% endif %}>
+              <label>启用此任务</label>
+            </div>
+            <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">发送目标 <span style="font-size:11px;color:var(--primary);font-weight:400;">（可添加多个，同一批消息将依次发给每个目标，用于群发）</span></label>
+            <div class="rmsg-target-list">
+              {% for t in item.get('targets', []) %}
+              <div class="list-item" style="margin-bottom:6px;">
+                <input type="text" class="form-control" name="rmsg_target" value="{{ t }}" placeholder="联系人或群名">
+                <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+              </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="btn-add btn-add-rmsg-target" style="margin-top:6px;"><i class="bi bi-plus-circle"></i> 添加目标</button>
+          </div>
+          <div class="row mb-2">
+            <div class="col-6">
+              <label class="cfg-label">发送时间窗口 开始</label>
+              <input type="time" class="form-control rmsg-time-start" value="{{ item.time_start }}">
+            </div>
+            <div class="col-6">
+              <label class="cfg-label">发送时间窗口 结束</label>
+              <input type="time" class="form-control rmsg-time-end" value="{{ item.time_end }}">
+            </div>
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">重复类型</label>
+            <select class="form-select rmsg-repeat-type">
+              <option value="daily"   {% if item.repeat_type == 'daily'   %}selected{% endif %}>每天</option>
+              <option value="weekly"  {% if item.repeat_type == 'weekly'  %}selected{% endif %}>每周</option>
+              <option value="monthly" {% if item.repeat_type == 'monthly' %}selected{% endif %}>每月</option>
+            </select>
+          </div>
+          <div class="mb-2 rmsg-days-wrap" style="{% if item.repeat_type == 'daily' %}display:none{% endif %}">
+            <label class="cfg-label rmsg-days-label">
+              {% if item.repeat_type == 'monthly' %}每月随机抽几天发送{% else %}每周随机抽几天发送{% endif %}
+              <span class="cfg-hint" style="display:inline;margin-left:6px;">（不超过{% if item.repeat_type == 'monthly' %}本月天数{% else %}7{% endif %}）</span>
+            </label>
+            <input type="number" class="form-control rmsg-days-count" min="1" max="{% if item.repeat_type == 'monthly' %}31{% else %}7{% endif %}" value="{{ item.random_days_count or 1 }}">
+          </div>
+          <label class="cfg-label">消息内容</label>
+          <div class="cfg-hint" style="margin-bottom:8px;"><i class="bi bi-image" style="color:var(--primary);"></i> 填写文字内容将发送文字；填写文件完整路径（图片/视频/文档/压缩包等，如 <code>C:\文件\报告.pdf</code>）将自动作为文件发送</div>
+          <div class="rmsg-msg-list">
+            {% for msg in item.msgs %}
+            <div class="list-item">
+              <textarea class="form-control" name="rmsg_msg" rows="2" placeholder="文字内容 或 文件完整路径（图片/视频/文档等）">{{ msg }}</textarea>
+              <button type="button" class="btn-pick-img" data-pick-kind="file" title="点击选择本地文件（图片/视频/文档等），自动填入路径"><i class="bi bi-folder2-open"></i></button>
+              <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+            </div>
+            {% endfor %}
+          </div>
+          <button type="button" class="btn-add btn-add-rmsg-msg"><i class="bi bi-plus-circle"></i> 添加消息</button>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" id="btn-add-random-msg-task" style="margin-top:4px;"><i class="bi bi-plus-circle"></i> 添加任务</button>
+    </div>
+  </div>
+  <div class="config-panel" id="tab-moments">
+
+    <!-- 随机朋友圈点赞 -->
+    <div class="cfg-card" style="margin-bottom:20px;">
+      <div class="cfg-card-header"><i class="bi bi-hand-thumbs-up"></i><h5>随机朋友圈点赞</h5><span class="desc">自动随机时间点赞，活跃账号</span></div>
+      <div class="cfg-hint" style="margin-bottom:14px;padding:10px 14px;background:#f0f7ff;border:1px solid #bcd4f5;border-radius:6px;color:#1a5fa8;font-size:12.5px;line-height:1.9;">
+        <i class="bi bi-info-circle" style="color:#2d8cf0;"></i>
+        <strong>功能说明：</strong>开启后，机器人将在设定的随机时间间隔内自动打开朋友圈，对当前第一条朋友圈进行点赞，然后关闭朋友圈。<br>
+        该功能可以模拟真实用户行为，保持账号活跃度。每次点赞完成后会重新随机生成下一次的触发间隔。<br>
+        <strong>⚠️ 注意：</strong>需要启动机器人后才会生效；请确认微信已在手机端开启朋友圈功能；每次点赞动作之间有 1~5 秒随机延时。
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="moments_like_switch" {% if config.moments_like_switch %}checked{% endif %}>
+        <label for="moments_like_switch">启用随机朋友圈点赞</label>
+        <span class="switch-desc">默认关闭，开启后机器人运行时自动随机点赞</span>
+      </div>
+      <div class="row mt-3">
+        <div class="col-6 mb-2">
+          <label class="cfg-label" for="moments_like_min">最小间隔（分钟）</label>
+          <input type="number" class="form-control" id="moments_like_min" min="1" max="1440" value="{{ config.moments_like_min }}">
+          <div class="cfg-hint">最短 1 分钟触发一次</div>
+        </div>
+        <div class="col-6 mb-2">
+          <label class="cfg-label" for="moments_like_max">最大间隔（分钟）</label>
+          <input type="number" class="form-control" id="moments_like_max" min="1" max="1440" value="{{ config.moments_like_max }}">
+          <div class="cfg-hint">最长 1440 分钟（24 小时）触发一次</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 随机定时朋友圈 -->
+    <div class="cfg-card" style="margin-bottom:20px;">
+      <div class="cfg-card-header"><i class="bi bi-shuffle"></i><h5>随机定时发布朋友圈</h5><span class="desc">时间窗口内随机选时发布，避免固定规律</span></div>
+      <div class="cfg-hint" style="margin-bottom:14px;padding:10px 14px;background:#f3f0ff;border:1px solid #c9b8ff;border-radius:6px;color:#4a1fa8;font-size:12.5px;line-height:1.9;">
+        <i class="bi bi-info-circle" style="color:#7c4dff;"></i>
+        <strong>功能说明：</strong>在设定的时间窗口内随机挑选一个时刻发布朋友圈，避免每天定点发布被发现规律。<br>
+        每周模式随机抽取指定天数（如设5天，则本周随机选5天发布，其余天跳过）；每月同理。<br>
+        <strong>⚠️ 注意：</strong>需要启动机器人后才会生效；文字和图片至少填写一项。
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="random_moments_switch" name="random_moments_switch" {% if config.random_moments_switch %}checked{% endif %}>
+        <label for="random_moments_switch">启用随机定时朋友圈</label>
+      </div>
+      <div id="random_moments_container">
+        {% for item in config.random_moments_list %}
+        <div class="random-moments-item" data-rmid="{{ item.id }}">
+          <div class="d-flex align-items-center justify-content-between mb-3">
+            <div class="switch-row" style="margin-bottom:0;flex:1">
+              <input class="form-check-input rm-enabled" type="checkbox" {% if item.enabled %}checked{% endif %}>
+              <label>启用此任务</label>
+            </div>
+            <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+          </div>
+          <div class="row mb-2">
+            <div class="col-6">
+              <label class="cfg-label">发布时间窗口 开始</label>
+              <input type="time" class="form-control rm-time-start" value="{{ item.time_start }}">
+            </div>
+            <div class="col-6">
+              <label class="cfg-label">发布时间窗口 结束</label>
+              <input type="time" class="form-control rm-time-end" value="{{ item.time_end }}">
+            </div>
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">重复类型</label>
+            <select class="form-select rm-repeat-type">
+              <option value="daily"   {% if item.repeat_type == 'daily'   %}selected{% endif %}>每天</option>
+              <option value="weekly"  {% if item.repeat_type == 'weekly'  %}selected{% endif %}>每周</option>
+              <option value="monthly" {% if item.repeat_type == 'monthly' %}selected{% endif %}>每月</option>
+            </select>
+          </div>
+          <div class="mb-2 rm-days-wrap" style="{% if item.repeat_type == 'daily' %}display:none{% endif %}">
+            <label class="cfg-label rm-days-label">
+              {% if item.repeat_type == 'monthly' %}每月随机抽几天发布{% else %}每周随机抽几天发布{% endif %}
+              <span class="cfg-hint" style="display:inline;margin-left:6px;" id="">（不超过{% if item.repeat_type == 'monthly' %}本月天数{% else %}7{% endif %}）</span>
+            </label>
+            <input type="number" class="form-control rm-days-count" min="1" max="{% if item.repeat_type == 'monthly' %}31{% else %}7{% endif %}" value="{{ item.random_days_count or 1 }}">
+          </div>
+          <hr style="margin:12px 0;">
+          <div class="mb-2">
+            <label class="cfg-label">朋友圈文字 <span style="font-size:11px;color:var(--muted);font-weight:400;">（选填，文字和图片至少填一项）</span></label>
+            <textarea class="form-control rm-text" rows="4" placeholder="输入朋友圈文字内容，支持换行">{{ item.text }}</textarea>
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">朋友圈图片 <span style="font-size:11px;color:var(--muted);font-weight:400;">（选填，填本地图片绝对路径，最多9张）</span></label>
+            <div class="rm-images-list">
+              {% for img in item.images %}
+              <div class="list-item">
+                <input type="text" class="form-control" name="rm_image" value="{{ img }}" placeholder="图片/视频完整路径，如 D:\Images\1.png">
+                <button type="button" class="btn-pick-img" title="点击选择本地图片/视频"><i class="bi bi-folder2-open"></i></button>
+                <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+              </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="btn-add btn-add-rm-image" style="margin-top:6px;"><i class="bi bi-plus-circle"></i> 添加图片路径</button>
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">可见范围</label>
+            <select class="form-select rm-privacy">
+              <option value="public"    {% if item.privacy == 'public'    %}selected{% endif %}>公开（所有人可见）</option>
+              <option value="whitelist" {% if item.privacy == 'whitelist' %}selected{% endif %}>白名单（仅标签内的人可见）</option>
+              <option value="blacklist" {% if item.privacy == 'blacklist' %}selected{% endif %}>黑名单（屏蔽标签内的人）</option>
+            </select>
+          </div>
+          <div class="mb-2 rm-tags-wrap" style="{% if item.privacy == 'public' %}display:none{% endif %}">
+            <label class="cfg-label">标签列表</label>
+            <div class="rm-tags-list">
+              {% for tag in item.tags %}
+              <div class="list-item">
+                <input type="text" class="form-control" name="rm_tag" value="{{ tag }}" placeholder="标签名称">
+                <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+              </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="btn-add btn-add-rm-tag" style="margin-top:6px;"><i class="bi bi-plus-circle"></i> 添加标签</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" id="btn-add-random-moments" style="margin-top:4px;"><i class="bi bi-plus-circle"></i> 添加任务</button>
+    </div>
+
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-image"></i><h5>定时发送朋友圈</h5><span class="desc">配置定时自动发布朋友圈任务</span></div>
+      <div class="cfg-hint" style="margin-bottom:14px;padding:10px 14px;background:#fffbe6;border:1px solid #ffe58f;border-radius:6px;color:#7a5c00;">
+        <i class="bi bi-info-circle" style="color:#faad14;"></i>
+        <strong>注意：</strong>需要启动机器人后定时朋友圈任务才会触发；请确认微信已在手机端开启朋友圈功能；文字和图片至少填写一项。
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="scheduled_moments_switch" name="scheduled_moments_switch" {% if config.scheduled_moments_switch %}checked{% endif %}>
+        <label for="scheduled_moments_switch">启用定时朋友圈</label>
+      </div>
+      <div id="scheduled_moments_container">
+        {% for item in config.scheduled_moments_list %}
+        <div class="scheduled-moments-item" data-moments-id="{{ item.id }}">
+          <div class="d-flex align-items-center justify-content-between mb-3">
+            <div class="switch-row" style="margin-bottom:0;flex:1">
+              <input class="form-check-input moments-enabled" type="checkbox" {% if item.enabled %}checked{% endif %}>
+              <label>启用此任务</label>
+            </div>
+            <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">发送时间</label>
+            <input type="time" class="form-control" name="moments_time" value="{{ item.time }}">
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">重复类型</label>
+            <select class="form-select moments-repeat-type">
+              <option value="daily"  {% if item.repeat_type == 'daily'  %}selected{% endif %}>每天</option>
+              <option value="weekly" {% if item.repeat_type == 'weekly' %}selected{% endif %}>每周</option>
+              <option value="monthly"{% if item.repeat_type == 'monthly'%}selected{% endif %}>每月</option>
+              <option value="once"   {% if item.repeat_type == 'once'   %}selected{% endif %}>单次</option>
+              <option value="custom" {% if item.repeat_type == 'custom' %}selected{% endif %}>自定义日期</option>
+            </select>
+          </div>
+          <div class="gap-2 mb-2 moments-weekdays" style="{% if item.repeat_type == 'weekly' %}display:flex{% else %}display:none{% endif %}">
+            {% set days = ['一','二','三','四','五','六','日'] %}
+            {% for d in range(1,8) %}
+            <span class="weekday-btn {% if d|string in item.get('weekdays',[]) or d in item.get('weekdays',[]) %}active{% endif %}" data-day="{{ d }}">{{ days[d-1] }}</span>
+            <input type="checkbox" class="weekday-check d-none" value="{{ d }}" {% if d|string in item.get('weekdays',[]) or d in item.get('weekdays',[]) %}checked{% endif %}>
+            {% endfor %}
+          </div>
+          <div class="mb-2 moments-monthly-days" style="{% if item.repeat_type != 'monthly' %}display:none{% endif %}">
+            <input type="text" class="form-control moments-monthly-val" value="{{ item.dates | join(',') }}" placeholder="如：1,15 表示每月1号和15号">
+          </div>
+          <div class="mb-2 moments-date" style="{% if item.repeat_type not in ['once','custom'] %}display:none{% endif %}">
+            <input type="{% if item.repeat_type == 'once' %}date{% else %}text{% endif %}" class="form-control moments-date-input" value="{{ item.dates | join(',') }}" placeholder="如：2026-03-20（自定义多个用逗号分隔）">
+          </div>
+          <hr style="margin:12px 0;">
+          <div class="mb-2">
+            <label class="cfg-label">朋友圈文字 <span style="font-size:11px;color:var(--muted);font-weight:400;">（选填，可留空，但文字和图片至少填一项）</span></label>
+            <textarea class="form-control moments-text" rows="4" placeholder="输入朋友圈文字内容，支持换行">{{ item.text }}</textarea>
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">朋友圈图片 <span style="font-size:11px;color:var(--muted);font-weight:400;">（选填，填本地图片绝对路径，最多9张）</span></label>
+            <div class="cfg-hint" style="margin-bottom:8px;"><i class="bi bi-folder2-open" style="color:var(--primary);"></i> 每行填写一张图片的完整路径，如 <code>D:\Images\1.png</code></div>
+            <div class="moments-images-list">
+              {% for img in item.images %}
+              <div class="list-item">
+                <input type="text" class="form-control" name="moments_image" value="{{ img }}" placeholder="图片/视频完整路径，如 D:\Images\1.png">
+                <button type="button" class="btn-pick-img" title="点击选择本地图片/视频，自动填入路径"><i class="bi bi-folder2-open"></i></button>
+                <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+              </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="btn-add btn-add-moments-image" style="margin-top:6px;"><i class="bi bi-plus-circle"></i> 添加图片路径</button>
+          </div>
+          <div class="mb-2">
+            <label class="cfg-label">可见范围</label>
+            <select class="form-select moments-privacy">
+              <option value="public"    {% if item.privacy == 'public'    %}selected{% endif %}>公开（所有人可见）</option>
+              <option value="whitelist" {% if item.privacy == 'whitelist' %}selected{% endif %}>白名单（仅标签内的人可见）</option>
+              <option value="blacklist" {% if item.privacy == 'blacklist' %}selected{% endif %}>黑名单（屏蔽标签内的人）</option>
+            </select>
+          </div>
+          <div class="mb-2 moments-tags-wrap" style="{% if item.privacy == 'public' %}display:none{% endif %}">
+            <label class="cfg-label">标签列表 <span style="font-size:11px;color:var(--muted);font-weight:400;">（白名单：仅这些标签的人可见；黑名单：屏蔽这些标签的人）</span></label>
+            <div class="moments-tags-list">
+              {% for tag in item.tags %}
+              <div class="list-item">
+                <input type="text" class="form-control" name="moments_tag" value="{{ tag }}" placeholder="标签名称">
+                <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+              </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="btn-add btn-add-moments-tag" style="margin-top:6px;"><i class="bi bi-plus-circle"></i> 添加标签</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" id="btn-add-moments-task" style="margin-top:4px;"><i class="bi bi-plus-circle"></i> 添加朋友圈任务</button>
+    </div>
+  </div>
+
+  <!-- ===== Tab: StartStop ===== -->
+  <div class="config-panel" id="tab-startstop">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-clock-history"></i><h5>定时启停</h5><span class="desc">设置机器人每日自动启停时间</span></div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="everyday_start_stop_bot_switch" name="everyday_start_stop_bot_switch" {% if config.everyday_start_stop_bot_switch %}checked{% endif %}>
+        <label for="everyday_start_stop_bot_switch">启用定时启停</label>
+      </div>
+      <div class="row">
+        <div class="col-6 mb-3">
+          <label class="cfg-label" for="everyday_start_bot_time">每日启动时间</label>
+          <input type="time" class="form-control" id="everyday_start_bot_time" name="everyday_start_bot_time" value="{{ config.everyday_start_bot_time }}">
+        </div>
+        <div class="col-6 mb-3">
+          <label class="cfg-label" for="everyday_stop_bot_time">每日停止时间</label>
+          <input type="time" class="form-control" id="everyday_stop_bot_time" name="everyday_stop_bot_time" value="{{ config.everyday_stop_bot_time }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Other ===== -->
+  <div class="config-panel" id="tab-other">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-sliders"></i><h5>其他配置</h5><span class="desc">发送延迟等高级设置</span></div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="reply_delay_switch" {% if config.get('reply_delay_switch', True) %}checked{% endif %}>
+        <label for="reply_delay_switch">启用发送延迟（模拟人工操作）</label>
+        <span class="switch-desc">关闭后机器人将立即回复，不等待</span>
+      </div>
+      <div id="reply-delay-settings" style="{% if not config.get('reply_delay_switch', True) %}display:none;{% endif %}">
+        <div class="row g-3">
+          <div class="col-6">
+            <label class="cfg-label" for="reply_delay_min">最小延迟（秒，1 ~ 600）</label>
+            <input type="number" class="form-control" id="reply_delay_min" min="1" max="600"
+              value="{{ config.get('reply_delay_min', 1) }}" placeholder="1">
+            <div class="cfg-hint">每次发送前等待的最短时间</div>
+          </div>
+          <div class="col-6">
+            <label class="cfg-label" for="reply_delay_max">最大延迟（秒，1 ~ 600）</label>
+            <input type="number" class="form-control" id="reply_delay_max" min="1" max="600"
+              value="{{ config.get('reply_delay_max', 5) }}" placeholder="5">
+            <div class="cfg-hint">每次发送前等待的最长时间</div>
+          </div>
+        </div>
+        <div class="cfg-hint" style="margin-top:8px;">实际延迟为最小值到最大值之间的随机整数秒 · 若最小值大于最大值则自动互换</div>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="merge_reply_switch"
+               {% if config.get('merge_reply_switch', False) %}checked{% endif %}
+               onchange="toggleMergeReply(this.checked)">
+        <label for="merge_reply_switch" style="font-weight:600;cursor:pointer;">启用多条消息合并回复</label>
+        <span class="switch-desc">短时间内连发多条时先缓冲，窗口内没有新消息再合并成一条调用 AI（私聊、群聊均生效）</span>
+      </div>
+      <div id="merge_reply_settings" style="{% if not config.get('merge_reply_switch', False) %}display:none;{% endif %}">
+        <div class="row g-3" style="margin-top:4px;">
+          <div class="col-6">
+            <label class="cfg-label" for="merge_reply_window">等待秒数（1 ~ 300）</label>
+            <input type="number" class="form-control" id="merge_reply_window" min="1" max="300"
+              value="{{ config.get('merge_reply_window', 5) }}" placeholder="5">
+            <div class="cfg-hint">窗口内没有新消息才回复；来了新消息会重新计时</div>
+          </div>
+          <div class="col-6">
+            <label class="cfg-label" for="merge_reply_max_count">最多合并条数（1 ~ 100）</label>
+            <input type="number" class="form-control" id="merge_reply_max_count" min="1" max="100"
+              value="{{ config.get('merge_reply_max_count', 10) }}" placeholder="10">
+            <div class="cfg-hint">达到此条数立即回复，不再等满窗口</div>
+          </div>
+        </div>
+        <div class="cfg-hint" style="margin-top:8px;">
+          <i class="bi bi-info-circle" style="color:#2d8cf0;margin-right:4px;"></i>
+          只对"会走 AI 回复"的消息生效：命中关键词、管理员命令、自定义转发仍立即执行，不受缓冲影响。<br>
+          群聊按发送人分别合并（A、B 同时说话不会被拼成一条）；合并消息仍可引用，引用的是本组最后一条。<br>
+          ⚠️ 停止机器人时未回复的缓冲会被丢弃；运行中关闭此开关同样丢弃缓冲，不做延迟回复。
+        </div>
+      </div>
+      <div class="mb-2">
+        <label class="cfg-label" for="api_error_reply" style="font-weight:600;">接口调用失败固定回复</label>
+        <div class="inline-check-field">
+          <textarea class="form-control" id="api_error_reply" rows="2"
+                    placeholder="在忙，我稍后回复您">{{ config.get('api_error_reply', '在忙，我稍后回复您') }}</textarea>
+          <label class="inline-check-suffix" for="api_error_reply_once">
+            <input class="form-check-input" type="checkbox" id="api_error_reply_once" {% if config.get('api_error_reply_once', False) %}checked{% endif %}>
+            只回复一次
+          </label>
+        </div>
+        <div class="cfg-hint" style="margin-top:6px;">当调用 AI / 模型接口失败时，机器人将发送此固定回复，而非原始报错提示。</div>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="chat_max_round_switch" {% if config.get('chat_max_round_switch', False) %}checked{% endif %}>
+        <label for="chat_max_round_switch">启用回复次数限制（单个好友）</label>
+        <span class="switch-desc">超出设定次数后不再调用 AI 自动回复</span>
+      </div>
+      <div id="chat-max-round-settings" style="{% if not config.get('chat_max_round_switch', False) %}display:none;{% endif %}">
+        <div class="row g-3" style="margin-top:4px;">
+          <div class="col-6">
+            <label class="cfg-label" for="chat_max_round_default">单个好友最多回复次数</label>
+            <input type="number" class="form-control" id="chat_max_round_default" min="1" max="99999"
+              value="{{ config.get('chat_max_round_default', 99) }}" placeholder="99">
+            <div class="cfg-hint">此设置全局生效</div>
+          </div>
+          <div class="col-6">
+            <label class="cfg-label" for="chat_max_round_reset_days">计数重置周期（天）</label>
+            <input type="number" class="form-control" id="chat_max_round_reset_days" min="0" max="365"
+              value="{{ config.get('chat_max_round_reset_days', 0) }}" placeholder="0">
+            <div class="cfg-hint">0=永久累计，1=每天重置，7=每周重置，以此类推</div>
+          </div>
+        </div>
+        <div class="mb-2" style="margin-top:12px;">
+          <label class="cfg-label" for="chat_max_round_reply">超出次数限制固定回复</label>
+          <div class="inline-check-field">
+            <textarea class="form-control" id="chat_max_round_reply" rows="2"
+                      placeholder="不填写则不回复">{{ config.get('chat_max_round_reply', '') }}</textarea>
+            <label class="inline-check-suffix" for="chat_max_round_reply_once">
+              <input class="form-check-input" type="checkbox" id="chat_max_round_reply_once" {% if config.get('chat_max_round_reply_once', False) %}checked{% endif %}>
+              只回复一次
+            </label>
+          </div>
+          <div class="cfg-hint">当单个用户回复次数超限时，机器人将发送此固定回复，留空则不回复。</div>
+        </div>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="clean_ai_reply_switch" {% if config.get('clean_ai_reply_switch', True) %}checked{% endif %}>
+        <label for="clean_ai_reply_switch">屏蔽模型思考过程</label>
+        <span class="switch-desc">自动移除模型返回的思考标签，避免将推理过程发送给用户</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Account ===== -->
+  <div class="config-panel" id="tab-account">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-person-gear"></i><h5>后台账号密码</h5><span class="desc">修改 Web 管理面板的登录账号</span></div>
+      <div class="mb-3">
+        <label class="cfg-label" for="acc-username">用户名</label>
+        <input type="text" class="form-control" id="acc-username" placeholder="请输入新用户名" autocomplete="off">
+      </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="acc-password">新密码</label>
+        <input type="password" class="form-control" id="acc-password" placeholder="请输入新密码" autocomplete="new-password">
+      </div>
+      <div class="mb-4">
+        <label class="cfg-label" for="acc-password2">确认新密码</label>
+        <input type="password" class="form-control" id="acc-password2" placeholder="再次输入新密码" autocomplete="new-password">
+      </div>
+      <div id="acc-msg" style="display:none;font-size:13px;margin-bottom:12px;padding:8px 12px;border-radius:6px;"></div>
+      <button type="button" id="btn-save-account" class="btn btn-save" style="font-size:13.5px;padding:8px 24px;border-radius:6px;border:none;cursor:pointer;"><i class="bi bi-save"></i> 保存账号密码</button>
+      <div class="cfg-hint" style="margin-top:10px;">保存后下次登录时生效，当前会话不受影响。账密明文存储在 <code>admin.json</code> 中。</div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Email ===== -->
+  <div class="config-panel" id="tab-email">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-envelope-at"></i><h5>报错邮箱配置</h5><span class="desc">机器人出错时自动发送告警邮件</span></div>
+      <!-- SMTP 提示 -->
+      <div style="display:flex;gap:10px;align-items:flex-start;background:#FFF8E6;border:1px solid #FFD666;border-radius:6px;padding:12px 14px;margin-bottom:20px;">
+        <i class="bi bi-info-circle-fill" style="color:#FFC300;font-size:16px;flex-shrink:0;margin-top:1px;"></i>
+        <div style="font-size:12.5px;color:#7A5800;line-height:1.7;">
+          使用前需要先开启邮箱的 SMTP 服务并获取授权码。<br>
+          不同邮箱提供商的开启方式不同，请自行搜索：<br>
+          <span style="font-weight:600;">「QQ邮箱 开启SMTP 授权码」</span>、
+          <span style="font-weight:600;">「163邮箱 开启SMTP 授权码」</span>、
+          <span style="font-weight:600;">「Gmail SMTP 应用专用密码」</span> 等关键词。
+        </div>
+      </div>
+      <div class="row">
+        <div class="col-8 mb-3">
+          <label class="cfg-label" for="email-host">SMTP 服务器地址</label>
+          <input type="text" class="form-control" id="email-host" placeholder="例：smtp.qq.com">
+        </div>
+        <div class="col-4 mb-3">
+          <label class="cfg-label" for="email-port">端口</label>
+          <input type="number" class="form-control" id="email-port" placeholder="例：465">
+        </div>
+      </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="email-user">发件人邮箱</label>
+        <input type="email" class="form-control" id="email-user" placeholder="例：yourname@qq.com">
+        <div class="cfg-hint">发件人同时也是收件人，报错邮件会发到这个邮箱</div>
+      </div>
+      <div class="mb-4">
+        <label class="cfg-label" for="email-pass">授权码 / 密码</label>
+        <input type="password" class="form-control" id="email-pass" placeholder="邮箱授权码，不是登录密码" autocomplete="new-password">
+        <div class="cfg-hint">QQ / 163 邮箱填授权码，Gmail 填应用专用密码，不是邮箱登录密码</div>
+      </div>
+      <div id="email-msg" style="display:none;font-size:13px;margin-bottom:12px;padding:8px 12px;border-radius:6px;"></div>
+      <button type="button" id="btn-save-email" class="btn btn-save" style="font-size:13.5px;padding:8px 24px;border-radius:6px;border:none;cursor:pointer;"><i class="bi bi-save"></i> 保存邮箱配置</button>
+      <div class="cfg-hint" style="margin-top:10px;">配置保存在 <code>email.txt</code> 中，保存后立即生效。</div>
+    </div>
+  </div>
+
+
+
+  <!-- ===== Tab: Webhook ===== -->
+  <div class="config-panel" id="tab-webhook">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-broadcast-pin"></i><h5>Webhook 通知配置</h5><span class="desc">机器人出错时通过 HTTP Webhook 发送告警</span></div>
+      <div style="display:flex;gap:10px;align-items:flex-start;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:6px;padding:12px 14px;margin-bottom:20px;">
+        <i class="bi bi-info-circle-fill" style="color:#2563EB;font-size:16px;flex-shrink:0;margin-top:1px;"></i>
+        <div style="font-size:12.5px;color:#1E3A8A;line-height:1.7;">
+          支持飞书、钉钉、企业微信、Discord 等通用 HTTP Webhook。请求头和请求体中可使用 <code>$title</code>、<code>$content</code> 占位符。
+        </div>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="webhook-enabled">
+        <label class="form-check-label" for="webhook-enabled">启用 Webhook 通知</label>
+        <span class="switch-desc">关闭时不会发送 Webhook</span>
+      </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="webhook-url">Webhook URL</label>
+        <input type="url" class="form-control" id="webhook-url" placeholder="https://example.com/webhook">
+      </div>
+      <div class="row">
+        <div class="col-4 mb-3">
+          <label class="cfg-label" for="webhook-method">Method</label>
+          <select class="form-control" id="webhook-method">
+            <option value="POST">POST</option>
+            <option value="PUT">PUT</option>
+            <option value="PATCH">PATCH</option>
+          </select>
+        </div>
+        <div class="col-5 mb-3">
+          <label class="cfg-label" for="webhook-content-type">Content-Type</label>
+          <input type="text" class="form-control" id="webhook-content-type" placeholder="application/json">
+        </div>
+        <div class="col-3 mb-3">
+          <label class="cfg-label" for="webhook-timeout">超时（秒）</label>
+          <input type="number" class="form-control" id="webhook-timeout" min="1" max="60" placeholder="5">
+        </div>
+      </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="webhook-headers">Headers（JSON，可选）</label>
+        <textarea class="form-control" id="webhook-headers" rows="4" placeholder='{"Authorization":"Bearer token"}'></textarea>
+      </div>
+      <div class="mb-4">
+        <label class="cfg-label" for="webhook-body">Body</label>
+        <textarea class="form-control" id="webhook-body" rows="7" placeholder='{"title":"$title","content":"$content"}'></textarea>
+        <div class="cfg-hint">JSON 类型会按 JSON 发送；其他 Content-Type 会按原始文本发送。</div>
+      </div>
+      <div id="webhook-msg" style="display:none;font-size:13px;margin-bottom:12px;padding:8px 12px;border-radius:6px;"></div>
+      <button type="button" id="btn-save-webhook" class="btn btn-save" style="font-size:13.5px;padding:8px 24px;border-radius:6px;border:none;cursor:pointer;"><i class="bi bi-save"></i> 保存 Webhook 配置</button>
+      <button type="button" id="btn-test-webhook" class="btn btn-load" style="font-size:13.5px;padding:8px 24px;border-radius:6px;border:none;cursor:pointer;margin-left:8px;"><i class="bi bi-send"></i> 发送测试</button>
+      <div class="cfg-hint" style="margin-top:10px;">配置保存在 <code>webhook.json</code> 中，保存后立即生效。</div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Memory ===== -->
+  <div class="config-panel" id="tab-memory">
+    <!-- 配置卡片 -->
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-journal-text"></i><h5>对话记忆配置</h5><span class="desc">记忆功能会增加 token 消耗</span></div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="memory_switch" {% if config.get('memory_switch', True) %}checked{% endif %}>
+        <label class="form-check-label" for="memory_switch">启用对话记忆</label>
+        <span class="switch-desc">开启后机器人运行时的所有消息将写入记忆文件，AI 回复时携带历史上下文</span>
+      </div>
+      <div class="cfg-hint" style="margin-bottom:16px;">提示：推荐存储 3000 条，AI 带入 1000 条。数值越大 token 消耗越多，请根据实际需求调整。记忆存储依托对话名称区分对象，请手动做好微信备注，避免重名导致记忆混用。</div>
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label class="cfg-label" for="memory_max_count">最大存储条数（50 ~ 5000）</label>
+          <input type="number" class="form-control" id="memory_max_count" min="50" max="5000"
+            value="{{ config.get('memory_max_count', 3000) }}" placeholder="3000">
+          <div class="cfg-hint">每个对话窗口最多保留的消息条数，超出后删除最旧的</div>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="cfg-label" for="memory_context_count">AI 带入条数（50 ~ 存储上限）</label>
+          <input type="number" class="form-control" id="memory_context_count" min="50" max="5000"
+            value="{{ config.get('memory_context_count', 1000) }}" placeholder="1000">
+          <div class="cfg-hint">AI 回复时从记忆中读取最近 N 条作为上下文传入</div>
+        </div>
+      </div>
+    </div>
+    <!-- 记忆查看卡片 -->
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-chat-square-dots"></i><h5>记忆查看</h5><span class="desc">按需加载，切换时自动清空</span></div>
+      <div class="memory-layout">
+        <!-- 左栏：微信号列表 -->
+        <div class="memory-list-panel" id="memory-wx-panel">
+          <div class="panel-title">微信号 <button type="button" id="btn-refresh-memory" title="刷新"><i class="bi bi-arrow-clockwise"></i></button></div>
+          <div class="memory-list-inner" id="memory-wx-list"></div>
+        </div>
+        <!-- 中栏：窗口列表 -->
+        <div class="memory-list-panel" id="memory-chat-panel" style="display:none">
+          <div class="panel-title">对话窗口</div>
+          <div class="memory-list-inner" id="memory-chat-list"></div>
+        </div>
+        <!-- 右栏：消息记录 -->
+        <div class="memory-chat-area" id="memory-msg-area" style="display:none">
+          <div id="memory-msg-header" style="position:sticky;top:-14px;margin:-14px -16px 12px;padding:7px 14px;background:#e4e4e4;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;z-index:1;">
+            <span id="memory-msg-title" style="font-size:13px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:70%;"></span>
+            <span id="memory-msg-count" style="font-size:12px;color:var(--primary);font-weight:600;white-space:nowrap;flex-shrink:0;"></span>
+          </div>
+          <div id="memory-msg-container"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Backup ===== -->
+  <div class="config-panel" id="tab-backup">
+    <div class="cfg-card">
+      <div class="cfg-card-header">
+        <i class="bi bi-shield-check"></i>
+        <h5>数据备份</h5>
+        <span class="desc">将 config/ 和 memory/ 打包成 old_wxbot_config/时间戳.zip</span>
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-start;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:6px;padding:12px 14px;margin-bottom:20px;">
+        <i class="bi bi-info-circle-fill" style="color:#3B82F6;font-size:16px;flex-shrink:0;margin-top:1px;"></i>
+        <div style="font-size:12.5px;color:#1E3A5F;line-height:1.8;">
+          每次备份会把 <code>config/</code>、<code>memory/</code> 和版本标记文件打包成一个 <code>old_wxbot_config/时间戳.zip</code>。<br>
+          <strong>自动备份规则：</strong>首次运行自动备份；距上次备份超过 3 天自动备份；检测到版本更新时自动备份。
+        </div>
+      </div>
+      <button type="button" id="btnBackupNow" class="btn btn-save" style="min-width:150px;font-size:14px;">
+        <i class="bi bi-cloud-arrow-up"></i> 立即备份
+      </button>
+      <div id="backupResult" style="margin-top:14px;display:none;"></div>
+    </div>
+  </div>
+
+  </form>
+</div>
+
+<!-- ===== Log Panel ===== -->
+<div class="log-panel expanded" id="logPanel">
+  <div class="log-toolbar" id="logToolbar">
+    <div class="log-title"><i class="bi bi-terminal"></i><span class="log-title-main">运行日志</span><span class="log-title-sub">最近两条</span></div>
+    <div class="log-actions">
+      <button class="filter-btn active" data-level="ALL">ALL</button>
+      <button class="filter-btn" data-level="INFO">INFO</button>
+      <button class="filter-btn" data-level="SUCCESS">SUCCESS</button>
+      <button class="filter-btn" data-level="WARNING">WARNING</button>
+      <button class="filter-btn" data-level="ERROR">ERROR</button>
+      <button class="icon-btn" id="btnClearLog" title="清空日志"><i class="bi bi-trash"></i></button>
+      <button class="icon-btn" id="btnToggleLog" title="展开/收起"><i class="bi bi-chevron-up"></i></button>
+    </div>
+  </div>
+  <div class="mobile-log-preview" id="mobileLogPreview"></div>
+  <div class="log-body" id="logBody">
+    {% for log in logs %}
+    {% set lvl = log.level|upper %}
+    {% set badge_cls = 'log-info' %}
+    {% if lvl == 'SUCCESS' %}{% set badge_cls = 'log-success' %}
+    {% elif lvl == 'WARNING' %}{% set badge_cls = 'log-warning' %}
+    {% elif lvl == 'ERROR' %}{% set badge_cls = 'log-error' %}
+    {% elif lvl == 'DEBUG' %}{% set badge_cls = 'log-debug' %}
+    {% endif %}
+    <div class="log-entry" data-level="{{ lvl }}" data-log-id="{{ log.id|default(0) }}">
+      <span class="log-time">{{ log.time }}</span>
+      <span class="log-badge {{ badge_cls }}">{{ lvl }}</span>
+      <span class="log-msg">{{ log.message }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- ===== Scripts ===== -->
+<!-- 第三方库：主源由上方 Jinja 计算（本地直连读本地文件 / 远程中继走 CDN），
+     每对「主源 + 兜底」保证任一源不可用都能继续加载。
+     必须同步按序加载：dashboard.js 依赖 jQuery / summernote 已就绪。 -->
+<script src="{{ jqP }}"></script>
+<script>window.jQuery||document.write('<script src='+{{ jqA|tojson }}+'><\/script>');</script>
+<script src="{{ bsJsP }}"></script>
+<script>window.bootstrap||document.write('<script src='+{{ bsJsA|tojson }}+'><\/script>');</script>
+<script src="{{ snJsP }}"></script>
+<script>window.jQuery&&window.jQuery.summernote||document.write('<script src='+{{ snJsA|tojson }}+'><\/script>');</script>
+<script src="{{ snLangP }}"></script>
+<script>(function(){var ok=false;try{ok=!!(window.jQuery&&window.jQuery.summernote&&window.jQuery.summernote.lang&&window.jQuery.summernote.lang['zh-CN']);}catch(e){}
+if(!ok){document.write('<script src='+{{ snLangA|tojson }}+'><\/script>');}})();</script>
+<script>
+window.__BASE_PATH__ = {{ (request.script_root or '') | tojson }};
+window.__FORCE_REMOTE_ADMIN_CHANGE__ = {{ force_admin_change_required | default(false) | tojson }};
+window.__REMOTE_CONNECT_BLOCK_REQUIRED__ = {{ remote_connect_block_required | default(false) | tojson }};
+window.__API_CONFIGS__ = {{ config.api_configs | tojson }};
+window.__PROMPTS__ = {{ prompts | map(attribute='name') | list | tojson }};
+window.withBase = function(path){
+  var base = window.__BASE_PATH__ || '';
+  if(!path) return base || '';
+  if(/^https?:\/\//i.test(path) || /^wss?:\/\//i.test(path) || path.indexOf('//') === 0) return path;
+  if(path.indexOf(base + '/') === 0) return path;
+  return path.charAt(0) === '/' ? (base + path) : path;
+};
+// 配置版本号：保存时回传给后端，用于检测"页面打开后配置被别处改过"（冲突不静默覆盖）
+window.__CONFIG_REV__ = {{ config_rev | default('') | tojson }};
+if(window.jQuery){
+  $.ajaxPrefilter(function(options){
+    if(options && typeof options.url === 'string'){
+      options.url = window.withBase(options.url);
+    }
+  });
+}
+</script>
+<script src="{{ url_for('static', filename='bot_restart.js') }}?v={{ bot_version }}"></script>
+<script src="{{ url_for('static', filename='dashboard.js') }}?v={{ bot_version }}"></script>
+
+
+<!-- ===== 自定义弹窗 ===== -->
+<div id="sv-modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.48);z-index:9999;align-items:center;justify-content:center;">
+  <div id="sv-modal-box" style="background:var(--card);border-radius:14px;padding:30px 28px 22px;max-width:430px;width:92%;box-shadow:0 12px 48px rgba(0,0,0,.28);position:relative;animation:svModalIn .18s ease;">
+    <div id="sv-modal-icon" style="text-align:center;font-size:38px;margin-bottom:12px;"></div>
+    <div id="sv-modal-title" style="font-size:15.5px;font-weight:700;color:var(--card-fg);margin-bottom:8px;text-align:center;"></div>
+    <div id="sv-modal-body" style="font-size:13.5px;color:var(--muted);line-height:1.7;text-align:center;margin-bottom:22px;"></div>
+    <div id="sv-modal-btns" style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;"></div>
+  </div>
+</div>
+
+<!-- ===== 远程默认账号强制修改弹层 ===== -->
+<div id="force-admin-change-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.58);z-index:10001;align-items:center;justify-content:center;padding:18px;">
+  <div style="background:var(--card);border-radius:16px;padding:30px 28px 24px;max-width:460px;width:100%;box-shadow:0 12px 48px rgba(0,0,0,.28);animation:svModalIn .18s ease;">
+    <div style="text-align:center;font-size:38px;margin-bottom:12px;"><i class="bi bi-shield-lock-fill" style="color:#FA5151;"></i></div>
+    <div id="force-admin-change-title" style="font-size:16px;font-weight:800;color:var(--card-fg);margin-bottom:8px;text-align:center;">远程访问禁止使用默认账号密码</div>
+    <div id="force-admin-change-body" style="font-size:13px;color:var(--muted);text-align:center;line-height:1.8;margin-bottom:18px;">
+      当前是通过远程访问链接登录，且仍在使用默认账号 <code>admin</code> / 密码 <code>123456</code>。<br>
+      为了安全，必须先修改后台账号密码，修改完成后才可以继续使用面板。
+    </div>
+    <div style="display:grid;gap:12px;">
+      <div>
+        <label class="cfg-label" for="force-acc-username">新用户名</label>
+        <input id="force-acc-username" type="text" class="form-control" placeholder="请输入新的后台用户名" autocomplete="off">
+      </div>
+      <div>
+        <label class="cfg-label" for="force-acc-password">新密码</label>
+        <input id="force-acc-password" type="password" class="form-control" placeholder="请输入新的后台密码" autocomplete="new-password">
+      </div>
+      <div>
+        <label class="cfg-label" for="force-acc-password2">确认新密码</label>
+        <input id="force-acc-password2" type="password" class="form-control" placeholder="请再次输入新的后台密码" autocomplete="new-password">
+      </div>
+    </div>
+    <div id="force-admin-change-msg" style="display:none;font-size:12.5px;text-align:center;margin-top:14px;border-radius:6px;padding:8px 10px;"></div>
+    <div style="display:flex;justify-content:center;margin-top:16px;">
+      <button id="force-admin-change-submit" style="padding:9px 24px;border-radius:8px;font-weight:700;font-size:13.5px;cursor:pointer;border:none;background:#07C160;color:#fff;transition:opacity .15s;">保存并继续使用</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 激活码输入弹窗 ===== -->
+<div id="activate-dialog-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.48);z-index:10000;align-items:center;justify-content:center;">
+  <div style="background:var(--card);border-radius:14px;padding:30px 28px 24px;max-width:400px;width:92%;box-shadow:0 12px 48px rgba(0,0,0,.28);animation:svModalIn .18s ease;">
+    <div style="text-align:center;font-size:38px;margin-bottom:12px;"><i class="bi bi-key-fill" style="color:#07C160;"></i></div>
+    <div style="font-size:15.5px;font-weight:700;color:var(--card-fg);margin-bottom:6px;text-align:center;">输入激活码</div>
+    <div style="font-size:13px;color:var(--muted);text-align:center;margin-bottom:18px;">请输入您购买的 wxautox4 激活码</div>
+    <input id="activate-code-input" type="text" placeholder="请输入激活码" style="width:100%;padding:10px 12px;border-radius:7px;border:1px solid var(--border);font-size:14px;color:var(--card-fg);background:var(--card);box-sizing:border-box;margin-bottom:16px;outline:none;" />
+    <div id="activate-dialog-msg" style="display:none;font-size:12.5px;text-align:center;margin-bottom:12px;border-radius:6px;padding:6px 10px;"></div>
+    <div style="display:flex;gap:10px;justify-content:center;">
+      <button id="activate-dialog-cancel" style="padding:8px 22px;border-radius:7px;font-weight:600;font-size:13.5px;cursor:pointer;border:1px solid var(--border);background:#f2f2f2;color:#333;transition:opacity .15s;">取消</button>
+      <button id="activate-dialog-submit" style="padding:8px 22px;border-radius:7px;font-weight:600;font-size:13.5px;cursor:pointer;border:none;background:#07C160;color:#fff;transition:opacity .15s;">立即激活</button>
+    </div>
+  </div>
+</div>
+<script>
+function showActivateDialog() {
+  $('#activate-code-input').val('');
+  $('#activate-dialog-msg').hide();
+  $('#activate-dialog-submit').prop('disabled', false).text('立即激活');
+  $('#activate-dialog-overlay').css('display', 'flex');
+  setTimeout(function(){ $('#activate-code-input').focus(); }, 100);
+}
+$('#activate-dialog-cancel').on('click', function() {
+  $('#activate-dialog-overlay').hide();
+});
+$('#activate-dialog-submit').on('click', function() {
+  var code = $('#activate-code-input').val().trim();
+  if (!code) {
+    $('#activate-dialog-msg').text('请输入激活码').css({'background':'#fff1f1','color':'#ef4444'}).show();
+    return;
+  }
+  $('#activate-dialog-submit').prop('disabled', true).text('激活中...');
+  $('#activate-dialog-msg').hide();
+  $.ajax({
+    url: '/activate', type: 'POST',
+    contentType: 'application/json',
+    data: JSON.stringify({code: code}),
+    success: function(res) {
+      if (res.status === 'success') {
+        $('#activate-dialog-overlay').hide();
+        svModal.success('激活成功！机器人现在可以正常使用了。', '激活成功');
+        checkActivate(false);
+      } else {
+        $('#activate-dialog-msg').text(res.message || '激活失败').css({'background':'#fff1f1','color':'#ef4444'}).show();
+        $('#activate-dialog-submit').prop('disabled', false).text('立即激活');
+      }
+    },
+    error: function() {
+      $('#activate-dialog-msg').text('请求失败，请重试').css({'background':'#fff1f1','color':'#ef4444'}).show();
+      $('#activate-dialog-submit').prop('disabled', false).text('立即激活');
+    }
+  });
+});
+$('#activate-code-input').on('keydown', function(e) {
+  if (e.key === 'Enter') $('#activate-dialog-submit').click();
+});
+
+// ===== 数据备份 =====
+$('#btnBackupNow').on('click', function(){
+  var $btn = $(this);
+  var $result = $('#backupResult');
+  $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 备份中...');
+  $result.hide();
+  $.ajax({
+    url: '/api/backup_now',
+    type: 'POST',
+    success: function(res){
+      if(res.status === 'success'){
+        $result.show().html(
+          '<div style="background:#F0FDF4;border:1px solid #BBF7D0;color:#166534;padding:12px 16px;border-radius:8px;font-size:13.5px;line-height:1.8;">' +
+          '<i class="bi bi-check-circle-fill" style="margin-right:6px;"></i><strong>' + res.message + '</strong><br>' +
+          '<span style="color:#6B7280;font-size:12.5px;">备份路径：' + res.path + '</span>' +
+          '</div>'
+        );
+      } else {
+        $result.show().html(
+          '<div style="background:#FEF2F2;border:1px solid #FECACA;color:#DC2626;padding:12px 16px;border-radius:8px;font-size:13.5px;">' +
+          '<i class="bi bi-x-circle-fill" style="margin-right:6px;"></i>' + (res.message || '备份失败，请重试') +
+          '</div>'
+        );
+      }
+    },
+    error: function(){
+      $result.show().html(
+        '<div style="background:#FEF2F2;border:1px solid #FECACA;color:#DC2626;padding:12px 16px;border-radius:8px;font-size:13.5px;">' +
+        '<i class="bi bi-x-circle-fill" style="margin-right:6px;"></i>请求失败，请重试' +
+        '</div>'
+      );
+    },
+    complete: function(){
+      $btn.prop('disabled', false).html('<i class="bi bi-cloud-arrow-up"></i> 立即备份');
+    }
+  });
+});
+</script>
+</body>
+</html>
