@@ -150,6 +150,17 @@ def _poi_search(keyword, city=""):
     return [_parse_poi(p) for p in _amap("/v3/place/text", params).get("pois") or []]
 
 
+def _locate(location):
+    """地点文字转坐标：先按地址地理编码，失败再按地名搜 POI（微信位置消息常是「商场名 + 地址」）。"""
+    geos = _amap("/v3/geocode/geo", {"address": location}).get("geocodes") or []
+    if geos and _str(geos[0].get("location")):
+        return tuple(map(float, geos[0]["location"].split(",")))
+    for p in _poi_search(location):
+        if p["lng"] is not None:
+            return p["lng"], p["lat"]
+    return None
+
+
 def _poi_ids_from_text(text):
     """从文字和其中的高德链接里找 POI ID；高德短链接会跟随跳转后再找。
     大众点评等其它链接不去请求。"""
@@ -263,14 +274,14 @@ def search_places(keyword: str = "", city: str = "", limit: int = 10) -> str:
 def nearby_places(location: str, radius_km: float = 3, limit: int = 10) -> str:
     """查某个地点附近已收录的店，按距离从近到远。
 
-    location: 地点，例如「上海五角场」「杭州西湖」
+    location: 地点或地址，例如「上海五角场」「杭州西湖」，或群友发的微信位置里的地点名和地址
     radius_km: 半径（公里），默认 3
     limit: 最多返回几家，默认 10
     """
-    geos = _amap("/v3/geocode/geo", {"address": location}).get("geocodes") or []
-    if not geos:
+    center = _locate(location)
+    if not center:
         return f"高德上找不到这个地点：{location}"
-    lng0, lat0 = map(float, geos[0]["location"].split(","))
+    lng0, lat0 = center
     with _db() as conn:
         rows = conn.execute("SELECT * FROM places WHERE lng IS NOT NULL AND lat IS NOT NULL").fetchall()
 

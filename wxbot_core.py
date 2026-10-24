@@ -223,8 +223,9 @@ API_ERROR_REPLY    = "API返回错误，请稍后再试"
 MEDIA_CARRIER_TEXT = "1"
 
 # 群聊里算作「分享卡片」的消息类型（见 group_link_reply）。wxautox4 里小程序卡片
-# 可能被识别为 link 或 other，content 只有卡片上能看到的标题、描述和来源，拿不到 URL。
-GROUP_CARD_MSG_TYPES = ('link', 'miniapp', 'other')
+# 可能被识别为 link 或 other，content 只有卡片上能看到的标题、描述和来源，拿不到 URL；
+# 位置消息（location）的 content 是地点名和地址，可用来查「附近有什么」。
+GROUP_CARD_MSG_TYPES = ('link', 'miniapp', 'other', 'location')
 
 # ============================================================
 # 消息类发送：可自动作为「文件」发送的扩展名
@@ -495,7 +496,7 @@ class WXBotConfig:
         self.group_switch = False       # 群机器人总开关
         self.group_listen_only = False   # 群聊只监听不 AI 回复
         self.group_reply_at = False     # 群聊是否仅在被 @ 时才回复
-        self.group_link_reply = False   # 仅@时回复模式下，分享卡片（链接/小程序）不 @ 也交给 AI
+        self.group_link_reply = False   # 仅@时回复模式下，分享卡片（链接/小程序/位置）不 @ 也交给 AI
         self.group_welcome = False      # 群新人欢迎语开关
         self.group_welcome_random = 1.0 # 群新人欢迎语触发概率（0.0~1.0）
         self.group_welcome_msg = "欢迎新朋友！请先查看群公告！"
@@ -3756,7 +3757,7 @@ class WXBot:
                             time.sleep(1)
                             return result
 
-            # 分享卡片（大众点评、高德等）本身带不了 @，开了 group_link_reply 时同样交给 AI，
+            # 分享卡片（大众点评、高德等）和位置消息本身带不了 @，开了 group_link_reply 时同样交给 AI，
             # 由群绑定的接口（例如自建网关里的美食助手）决定怎么处理
             _is_shared_card = self.config.group_link_reply and message.type in GROUP_CARD_MSG_TYPES
             if (self.config.AtMe in message.content and self.config.group_reply_at) \
