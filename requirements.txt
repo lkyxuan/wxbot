@@ -1,0 +1,8 @@
+flask
+pywin32
+openai
+requests
+schedule
+wxautox4 >= 41.2.1
+cozepy
+websockets

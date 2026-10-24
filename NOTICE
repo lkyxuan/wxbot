@@ -1,0 +1,14 @@
+wxbot
+Copyright 2026 lkyxuan
+
+本项目基于 SiverWXbot_plus（https://github.com/SiverKing/SiverWXbot_plus）
+v4.8.1（上游提交 5f2f773）二次开发，原作者 Siver（SiverKing），Apache License 2.0。
+上游完整提交历史已保留在本仓库中。
+
+相对上游的本地修改：
+- web_server.py：面板监听地址改为读取环境变量 SIVER_HOST（默认 127.0.0.1），
+  启动日志与自动打开的浏览器地址同步使用该地址；
+- web_server.py：默认关闭在线检查更新（原实现会把 MAC 地址放进 User-Agent 发送给作者服务器），
+  设置 SIVER_ALLOW_UPDATE_CHECK=1 可恢复；
+- 移除 siver_panel.py（经作者服务器中转面板的远程访问客户端）；
+- .gitignore：补充 .env、cacert.pem 等本地运行数据。
