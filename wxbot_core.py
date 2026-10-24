@@ -2588,6 +2588,11 @@ class WXBot:
 
     def _add_listen_chat_once(self, nickname, label):
         """执行一次 AddListenChat，并记录基础结果。"""
+        # 初始化期间收到停止请求时不再注册：收尾的 StopListening 可能已经先执行了，
+        # 之后再注册的监听会残留下来，下次启动后同一个会话就会被监听两次（消息重复回复）
+        if self.stop_requested():
+            log(level="WARNING", message=f"已收到停止请求，跳过添加{label} {nickname} 监听")
+            return None
         result = self.wx.AddListenChat(nickname=nickname, callback=self.message_handle_callback)
         if result:
             log(message=f"添加{label} {nickname} 监听完成")
@@ -2614,7 +2619,7 @@ class WXBot:
             if nickname and nickname not in seen:
                 expected.append(nickname)
                 seen.add(nickname)
-        if not expected:
+        if not expected or self.stop_requested():
             return
 
         missing = [nickname for nickname in expected if not self._get_verified_subwindow(nickname)]
@@ -5816,6 +5821,11 @@ class WXBot:
         #   现在只有"初始化成功且期间没有停止请求"才真正开跑。
         if self.stop_requested():
             self.run_flag = False
+            # 停止请求在初始化途中到达时，收尾的 StopListening 可能早于后面的 AddListenChat，
+            # 这里强制让最后的 shutdown 再停一次，清掉停止之后注册的监听
+            with self._wx_lock:
+                if self.wx is not None:
+                    self._listening_started = True
             if init_ok:
                 log(level="WARNING", message='初始化期间收到停止请求，不再进入主循环，立即收尾')
         elif init_ok:
