@@ -20,6 +20,7 @@
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -124,25 +125,31 @@ class MCPManager:
 
     def openai_tools(self, server_names):
         """把若干 MCP 服务的工具转成 OpenAI function calling 格式。
-        工具名加上「服务名__」前缀，避免不同产品里的同名工具冲突。"""
-        result = []
+        工具名加上「服务名__」前缀，避免不同产品里的同名工具冲突；超过 64 字符时
+        截断并加哈希保证唯一。返回 (工具列表, {对外名称: (服务名, 原工具名)})，
+        调用时只认这张表，智能体调不到没分配给它的工具。"""
+        result, name_map = [], {}
         for server in server_names:
             for t in self.tools.get(server, []):
+                name = f"{server}__{t.name}"
+                if len(name) > 64 or name in name_map:
+                    digest = hashlib.sha1(f"{server}/{t.name}".encode("utf-8")).hexdigest()[:8]
+                    name = f"{name[:55]}_{digest}"
+                name_map[name] = (server, t.name)
                 result.append({
                     "type": "function",
                     "function": {
-                        "name": f"{server}__{t.name}"[:64],
+                        "name": name,
                         "description": t.description or "",
                         "parameters": t.input_schema or {"type": "object", "properties": {}},
                     },
                 })
-        return result
+        return result, name_map
 
-    def call(self, qualified_name, arguments, timeout=60):
-        server, _, tool = qualified_name.partition("__")
+    def call(self, server, tool, arguments, timeout=60):
         session = self.sessions.get(server)
         if session is None:
-            return f"工具不可用：{qualified_name}"
+            return f"工具不可用：{server}/{tool}"
         try:
             res = self._run(session.call_tool(tool, arguments), timeout)
         except Exception as e:
@@ -189,7 +196,7 @@ class AgentRunner:
         agent = self.cfg["agents"][agent_name]
         client, model, extra_body = self._llm(agent)
         messages = self.build_messages(agent, incoming_messages)
-        tools = self.mcp.openai_tools(agent.get("mcp", []))
+        tools, tool_map = self.mcp.openai_tools(agent.get("mcp", []))
         max_rounds = int(agent.get("max_tool_rounds", 5))
 
         for round_no in range(max_rounds + 1):
@@ -220,7 +227,11 @@ class AgentRunner:
                 except json.JSONDecodeError:
                     args = {}
                 log.info("[%s] 调用工具 %s %s", agent_name, c.function.name, args)
-                output = self.mcp.call(c.function.name, args)
+                target = tool_map.get(c.function.name)
+                if target is None:
+                    output = f"没有这个工具：{c.function.name}"
+                else:
+                    output = self.mcp.call(*target, args)
                 messages.append({"role": "tool", "tool_call_id": c.id, "content": output[:8000]})
         return "查询步骤太多了，换个问法试试"
 
