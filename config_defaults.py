@@ -6,7 +6,7 @@
   - web_server.main() 建文件时的 default_config（96 个键）
   - wxbot_core.create_new_config_file() 的 base_config（96 个键，与上一处是两份重复拷贝）
   - web_server.dashboard() 给老配置补键的 76 个 setdefault
-现在三者合并为本文件的 DEFAULT_CONFIG（98 个键），老配置补键由 apply_defaults() 统一完成。
+现在三者合并为本文件的 DEFAULT_CONFIG（99 个键），老配置补键由 apply_defaults() 统一完成。
 
 迁移原则
 --------
@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
     'group_listen_only': False,
     'group_reply_at': False,
     'group_reply_at_msg': True,
+    'group_link_reply': False,
     'group_reply_quote': False,
     'group_welcome': False,
     'group_welcome_random': 1.0,
@@ -174,6 +175,7 @@ def _coerce_bool_fields(merged_config):
         'group_listen_only',
         'group_reply_at',
         'group_reply_at_msg',
+        'group_link_reply',
         'group_reply_quote',
         'group_welcome',
         'new_friend_switch',
