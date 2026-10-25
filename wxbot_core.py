@@ -348,6 +348,18 @@ SPLIT_PROMPT_TEMPLATE = """\
 # ============================================================
 THINK_BLOCK_RE = re.compile(r'<think\b[^>]*>.*?</think>', re.IGNORECASE | re.DOTALL)
 LEADING_THINK_RE = re.compile(r'^\s*<think\b[^>]*>', re.IGNORECASE)
+# 记忆历史里的时间前缀格式（如 "[2026/10/23 21:04:31]"），模型有时会模仿着放在回复开头
+LEADING_TIMESTAMP_RE = re.compile(
+    r'^[ \t]*[\[【]\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?[\]】][ \t]*',
+    re.MULTILINE,
+)
+
+
+def strip_leading_timestamps(text):
+    """去掉回复里每行开头模仿记忆格式的时间戳。"""
+    if not text:
+        return text
+    return LEADING_TIMESTAMP_RE.sub("", str(text))
 
 
 def clean_ai_reply_text(text):
@@ -1440,7 +1452,10 @@ class OpenAIAPI:
             t = h.get('time', '')
             raw = h.get('content', '')
             sender = h.get('sender', '')
-            if role == 'user' and sender:
+            if role == 'assistant':
+                # 助手历史不带时间前缀：带了模型会模仿，把 "[2026/10/23 21:04:31]" 也发给用户
+                content = raw
+            elif sender:
                 content = f"[{t}] {sender}: {raw}" if t else f"{sender}: {raw}"
             else:
                 content = f"[{t}] {raw}" if t else raw
@@ -1791,7 +1806,7 @@ class CozeAPI:
                 raw = h.get('content', '')
                 sender = h.get('sender', '')
                 if h.get('attr') == 'self':
-                    content = f"[{t}] {raw}" if t else raw
+                    content = raw   # 助手历史不带时间前缀，避免模型模仿
                     try:
                         additional_messages.append(CozeMessage.build_assistant_answer(content))
                     except Exception:
@@ -2588,6 +2603,11 @@ class WXBot:
 
     def _add_listen_chat_once(self, nickname, label):
         """执行一次 AddListenChat，并记录基础结果。"""
+        # 初始化期间收到停止请求时不再注册：收尾的 StopListening 可能已经先执行了，
+        # 之后再注册的监听会残留下来，下次启动后同一个会话就会被监听两次（消息重复回复）
+        if self.stop_requested():
+            log(level="WARNING", message=f"已收到停止请求，跳过添加{label} {nickname} 监听")
+            return None
         result = self.wx.AddListenChat(nickname=nickname, callback=self.message_handle_callback)
         if result:
             log(message=f"添加{label} {nickname} 监听完成")
@@ -2614,7 +2634,7 @@ class WXBot:
             if nickname and nickname not in seen:
                 expected.append(nickname)
                 seen.add(nickname)
-        if not expected:
+        if not expected or self.stop_requested():
             return
 
         missing = [nickname for nickname in expected if not self._get_verified_subwindow(nickname)]
@@ -4044,11 +4064,14 @@ class WXBot:
 
     def _parse_split_reply(self, reply, max_count):
         """按 ||SPLIT|| 分隔符解析回复，过滤空白，截断到 max_count 条"""
-        parts = [p.strip() for p in reply.split(SPLIT_SEPARATOR) if p.strip()]
+        parts = [strip_leading_timestamps(p.strip()).strip() for p in reply.split(SPLIT_SEPARATOR)]
+        parts = [p for p in parts if p]
         return parts[:max_count] if parts else [reply]
 
     def _clean_reply_for_send(self, reply):
         """按配置清洗即将发送给用户的 AI 回复。"""
+        # 时间戳前缀不受清洗开关控制，任何情况下都不该发给用户
+        reply = strip_leading_timestamps(reply)
         if not self.config.clean_ai_reply_switch:
             return reply
         cleaned = clean_ai_reply_text(reply)
@@ -5816,6 +5839,11 @@ class WXBot:
         #   现在只有"初始化成功且期间没有停止请求"才真正开跑。
         if self.stop_requested():
             self.run_flag = False
+            # 停止请求在初始化途中到达时，收尾的 StopListening 可能早于后面的 AddListenChat，
+            # 这里强制让最后的 shutdown 再停一次，清掉停止之后注册的监听
+            with self._wx_lock:
+                if self.wx is not None:
+                    self._listening_started = True
             if init_ok:
                 log(level="WARNING", message='初始化期间收到停止请求，不再进入主循环，立即收尾')
         elif init_ok:
