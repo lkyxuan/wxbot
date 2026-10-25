@@ -242,8 +242,18 @@ def _map_link(lng, lat, name):
     return f"https://uri.amap.com/marker?position={lng},{lat}&name={quote(name)}&src=wxbot&coordinate=gaode&callnative=1"
 
 
+def _link(row):
+    """店铺的高德链接：有高德 POI ID 就用高德自己的店铺页（短，手机上点开可跳高德 App），否则用坐标标点链接。"""
+    if row["poi_id"]:
+        return f"https://www.amap.com/detail/{row['poi_id']}"
+    if row["lng"] is not None:
+        return _map_link(row["lng"], row["lat"], row["name"])
+    return ""
+
+
 def _with_link(row):
-    return f"\n  高德：{_map_link(row['lng'], row['lat'], row['name'])}" if row["lng"] is not None else ""
+    link = _link(row)
+    return f"\n  高德：{link}" if link else ""
 
 
 def _parse_time(text):
@@ -604,8 +614,8 @@ def place_detail(place_id: int) -> str:
             lines.append(f"- {when} {m['sender'] or '群友'} {m['kind']}{score}" + (f"：{body}" if body else ""))
     else:
         lines.append("群里还没人评价过这家")
-    if row["lng"] is not None:
-        lines.append("高德：" + _map_link(row["lng"], row["lat"], row["name"]))
+    if _link(row):
+        lines.append("高德：" + _link(row))
     return "\n".join(lines)
 
 
@@ -701,9 +711,9 @@ def place_map_link(place_id: int) -> str:
         row = conn.execute("SELECT * FROM places WHERE id = ?", (int(place_id),)).fetchone()
     if not row:
         return f"没有编号为 {place_id} 的店"
-    if row["lng"] is None:
+    if not _link(row):
         return f"{row['name']} 没有坐标，无法生成地图链接"
-    return f"{row['name']}：{_map_link(row['lng'], row['lat'], row['name'])}"
+    return f"{row['name']}：{_link(row)}"
 
 
 def _download(url, params, filename):
