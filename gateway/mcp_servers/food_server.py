@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-美食地图 MCP 服务
+云谷美食 MCP 服务
 =================
 
-群友转发的高德 / 大众点评分享、或者直接说「XX 路的 YY 火锅不错」，
-由 AI 调用这里的工具：用高德开放平台查到店铺的准确信息，存进本地 SQLite，
-之后可以按关键词 / 城市 / 附近查询，并生成高德地图链接。
+店库分两层，都在本地 SQLite：
+- 店铺（places）：公开信息，来自高德。底库由 refresh_base.py 批量拉云谷周边的店，
+  群友转发的高德 / 大众点评分享也会入库。
+- 口碑（mentions）：群友说过的话，每条挂在一家店上（推荐、踩雷、去过、想去……）。
+  推荐时群友口碑优先于高德评分。
 
 - 高德：分享链接里带店铺 ID（B0 开头）时直接按 ID 精确查询。
 - 大众点评：没有个人可用的开放接口，网页反爬严格，这里不抓点评页面，
   只用卡片标题里的店名去高德搜。
+- 店铺都给高德链接（uri.amap.com），手机点开唤起高德 App，不自建网页。
 
 环境变量：
     AMAP_KEY       高德开放平台「Web 服务」类型的 Key（必填）
@@ -19,7 +22,6 @@
 单独运行（调试用）：python food_server.py
 """
 
-import json
 import math
 import os
 import re
@@ -37,16 +39,19 @@ DB_PATH = os.environ.get(
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "food.db"),
 )
 
-# 高德 POI ID：B0 开头的 10 位字母数字
 # 静态地图、店铺照片的本地存放目录；机器人配置 ai_reply_image_dirs 要包含它
 IMAGE_DIR = os.environ.get("FOOD_IMAGE_DIR", os.path.join(os.path.dirname(DB_PATH), "images"))
 
-# 网页地图读取的数据文件（网关把 /food-map 映射到这个目录，见 config.example.json）
-MAP_DATA_DIR = os.environ.get("FOOD_MAP_DATA_DIR", os.path.join(os.path.dirname(DB_PATH), "map"))
-
+# 高德 POI ID：B0 开头的 10 位字母数字
 POI_ID_RE = re.compile(r"\bB0[0-9A-Z]{8}\b")
 URL_RE = re.compile(r"https?://[^\s<>\"'，。]+")
 AMAP_HOSTS = ("amap.com", "autonavi.com")
+
+# 底库还没跑过（meta 里没有圆心）时用的云谷中心：高德「云谷中心」灯彩街1009号
+DEFAULT_CENTER = (120.040246, 30.315336, "云谷中心")
+
+MENTION_KINDS = ("推荐", "踩雷", "一般", "去过", "想去", "分享")
+OPEN = "COALESCE(p.status, '') != '疑似关店'"
 
 server = MCPServer("food")
 
@@ -93,24 +98,98 @@ def _db():
         if col not in cols:
             conn.execute(f"ALTER TABLE places ADD COLUMN {col} {decl}")
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+    # 口碑：群友说过的话，一条挂一家店
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mentions (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            place_id   INTEGER NOT NULL,
+            sender     TEXT,
+            said_at    INTEGER,
+            kind       TEXT,      -- 推荐 / 踩雷 / 一般 / 去过 / 想去 / 分享
+            score      INTEGER,   -- 1～5，只有明确说了才填
+            tags       TEXT,      -- 要点，逗号分隔
+            quote      TEXT,      -- 原话
+            via        TEXT,      -- 自动抽取 / 打卡指令 / 分享卡片
+            msg_key    TEXT,      -- 来源消息标识，防止同一句话重复入库
+            created_at INTEGER
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mentions_place ON mentions(place_id)")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mentions_msg ON mentions(msg_key, place_id) "
+        "WHERE msg_key IS NOT NULL AND msg_key != ''"
+    )
     return conn
 
 
-def _export_map_data():
-    """把收录的店写成网页地图用的 data.json；每次增删后调用。只导出展示需要的字段。"""
-    fields = ("id", "name", "city", "district", "address", "lng", "lat", "category", "rating", "cost", "note", "added_by")
-    with _db() as conn:
-        rows = conn.execute(
-            f"SELECT {', '.join(fields)} FROM places WHERE COALESCE(status, '') != '疑似关店' ORDER BY created_at DESC"
-        ).fetchall()
-    os.makedirs(MAP_DATA_DIR, exist_ok=True)
-    tmp = os.path.join(MAP_DATA_DIR, "data.json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"updated_at": int(time.time()), "places": [dict(r) for r in rows]}, f, ensure_ascii=False)
-    os.replace(tmp, os.path.join(MAP_DATA_DIR, "data.json"))
+def _center(conn):
+    """云谷中心坐标：底库脚本存的圆心优先。"""
+    row = conn.execute("SELECT value FROM meta WHERE key = 'base_center'").fetchone()
+    if row:
+        lng, lat, name = row["value"].split(",", 2)
+        return float(lng), float(lat), name
+    return DEFAULT_CENTER
 
 
-def _place_line(row):
+def _dist_km(lng0, lat0, lng, lat):
+    # 球面距离（haversine），城市范围内足够准确
+    p1, p2 = math.radians(lat0), math.radians(lat)
+    dp, dl = p2 - p1, math.radians(lng - lng0)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 6371 * 2 * math.asin(math.sqrt(a))
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mention_stats(conn, place_ids):
+    """每家店的口碑汇总：{place_id: {"good", "bad", "went", "want", "total", "tags", "quotes"}}。"""
+    stats = {}
+    if not place_ids:
+        return stats
+    marks = ",".join("?" * len(place_ids))
+    rows = conn.execute(
+        f"SELECT * FROM mentions WHERE place_id IN ({marks}) ORDER BY said_at DESC, id DESC", list(place_ids)
+    ).fetchall()
+    for m in rows:
+        s = stats.setdefault(m["place_id"], {"good": 0, "bad": 0, "went": set(), "want": set(), "total": 0, "tags": [], "quotes": []})
+        s["total"] += 1
+        score = m["score"] or 0
+        if m["kind"] == "推荐" or score >= 4:
+            s["good"] += 1
+        elif m["kind"] == "踩雷" or (score and score <= 2):
+            s["bad"] += 1
+        if m["sender"]:
+            if m["kind"] == "想去":
+                s["want"].add(m["sender"])
+            elif m["kind"] in ("推荐", "踩雷", "一般", "去过"):
+                s["went"].add(m["sender"])
+        for t in re.split(r"[，,、;；]\s*", m["tags"] or ""):
+            if t and t not in s["tags"]:
+                s["tags"].append(t)
+        if m["quote"] and len(s["quotes"]) < 2 and m["kind"] != "想去":
+            s["quotes"].append(f"{m['sender'] or '群友'}：{m['quote']}")
+    return stats
+
+
+def _stats_text(s):
+    if not s:
+        return ""
+    parts = []
+    counts = [f"推荐{s['good']}" if s["good"] else "", f"踩雷{s['bad']}" if s["bad"] else ""]
+    counts = [c for c in counts if c]
+    parts.append("群友口碑：" + ("、".join(counts) if counts else f"提到{s['total']}次"))
+    if s["tags"]:
+        parts.append("要点：" + "、".join(s["tags"][:5]))
+    parts += [f"「{q}」" for q in s["quotes"]]
+    return "；".join(parts)
+
+
+def _place_line(row, stats=None, dist_km=None):
     parts = [f"#{row['id']} {row['name']}"]
     if row["district"] or row["address"]:
         parts.append(f"{row['city'] or ''}{row['district'] or ''} {row['address'] or ''}".strip())
@@ -118,21 +197,39 @@ def _place_line(row):
     if row["category"]:
         extra.append(row["category"].split(";")[-1])
     if row["rating"]:
-        extra.append(f"评分{row['rating']}")
+        extra.append(f"高德评分{row['rating']}")
     if row["cost"]:
         extra.append(f"人均{row['cost']}元")
+    if dist_km is None and row["distance_m"] is not None:
+        dist_km = row["distance_m"] / 1000
+    if dist_km is not None:
+        extra.append(f"距离{dist_km:.1f}公里")
     if extra:
         parts.append("，".join(extra))
+    if stats:
+        parts.append(_stats_text(stats))
     if row["note"]:
         parts.append(f"备注：{row['note']}")
-    if row["added_by"]:
-        parts.append(f"推荐人：{row['added_by']}")
     return "｜".join(parts)
 
 
 def _map_link(lng, lat, name):
-    # 高德 URI API：无需 Key，手机上点开会唤起高德 App / 网页地图
+    # 高德 URI API：无需 Key，手机上点开会唤起高德 App
     return f"https://uri.amap.com/marker?position={lng},{lat}&name={quote(name)}&src=wxbot&coordinate=gaode&callnative=1"
+
+
+def _with_link(row):
+    return f"\n  高德：{_map_link(row['lng'], row['lat'], row['name'])}" if row["lng"] is not None else ""
+
+
+def _parse_time(text):
+    """「2026-10-25 12:01:02」这种时间转时间戳；解析不了就用现在。"""
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return int(time.mktime(time.strptime(text.strip(), fmt)))
+        except (ValueError, AttributeError):
+            continue
+    return int(time.time())
 
 
 # ============================================================
@@ -215,135 +312,349 @@ def _poi_ids_from_text(text):
     return list(dict.fromkeys(ids))
 
 
+def _clean_keyword(text):
+    """去掉链接和分享套话，剩下的当作店名。"""
+    keyword = URL_RE.sub(" ", text)
+    keyword = re.sub(r"[【】\[\]「」·•|]|人均\s*\S*元?|大众点评|美团|高德地图|分享|推荐|快来看看|小程序|链接", " ", keyword)
+    return " ".join(keyword.split())[:40]
+
+
+def _local_matches(conn, keyword, limit=5):
+    """在店库里按店名找：先整串匹配，再用括号前的主店名匹配。"""
+    tries = [keyword]
+    base = re.split(r"[(（]", keyword)[0].strip()
+    if base and base != keyword:
+        tries.append(base)
+    for kw in tries:
+        rows = conn.execute(
+            "SELECT * FROM places WHERE name LIKE ? ORDER BY COALESCE(distance_m, 1e12) LIMIT ?", (f"%{kw}%", limit)
+        ).fetchall()
+        if rows:
+            return rows
+    return []
+
+
+def _insert_place(conn, p, source):
+    cur = conn.execute(
+        """INSERT INTO places (poi_id, name, city, district, address, lng, lat, category, tel,
+                               rating, cost, photo_url, source, origin, created_at)
+           VALUES (:poi_id, :name, :city, :district, :address, :lng, :lat, :category, :tel,
+                   :rating, :cost, :photo_url, :source, '群友分享', :created_at)""",
+        {**p, "source": source, "created_at": int(time.time())},
+    )
+    lng0, lat0, _ = _center(conn)
+    if p["lng"] is not None:
+        conn.execute(
+            "UPDATE places SET distance_m = ? WHERE id = ?",
+            (round(_dist_km(lng0, lat0, p["lng"], p["lat"]) * 1000), cur.lastrowid),
+        )
+    return conn.execute("SELECT * FROM places WHERE id = ?", (cur.lastrowid,)).fetchone()
+
+
+def _write_mention(conn, place_id, sender, kind, quote_text="", tags="", score=0, via="", msg_key="", said_at=""):
+    """写一条口碑，返回 True；同一消息同一家店已经记过时返回 False。"""
+    score = int(score or 0)
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO mentions (place_id, sender, said_at, kind, score, tags, quote, via, msg_key, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (place_id, sender.strip(), _parse_time(said_at) if said_at else int(time.time()), kind,
+         score if 1 <= score <= 5 else None, tags.strip(), quote_text.strip(), via.strip(), msg_key.strip() or None,
+         int(time.time())),
+    )
+    return cur.rowcount > 0
+
+
 # ============================================================
 # 工具
 # ============================================================
 @server.tool()
-def find_place(text: str, city: str = "") -> str:
-    """识别一家店：可以传群友转发的高德 / 大众点评分享内容（卡片标题或链接），
-    也可以传店名。返回高德上匹配到的候选店铺（含 POI ID），供确认后调用 save_place 保存。
+def find_place(text: str, city: str = "杭州") -> str:
+    """识别一家店：可以传群友转发的高德 / 大众点评分享内容（卡片标题或链接），也可以传店名。
+    先在本地店库里找，找到就返回店铺编号（#数字），可以直接用来记口碑；
+    店库里没有才去高德搜，返回 POI ID，确认后用 save_place 入库。
 
-    text: 分享内容、链接或店名，例如「海底捞(五角场店)」
-    city: 城市，可选，例如「上海」；能明显缩小搜索范围
+    text: 分享内容、链接或店名，例如「老头儿油爆虾(西溪店)」
+    city: 城市，默认杭州
     """
     ids = _poi_ids_from_text(text)
+    with _db() as conn:
+        local = []
+        for i in ids[:3]:
+            row = conn.execute("SELECT * FROM places WHERE poi_id = ?", (i,)).fetchone()
+            if row:
+                local.append(row)
+        keyword = _clean_keyword(text)
+        if not local and not ids and keyword:
+            local = _local_matches(conn, keyword)
+        if local:
+            stats = _mention_stats(conn, [r["id"] for r in local])
+            return "店库里已有：\n" + "\n".join(_place_line(r, stats.get(r["id"])) for r in local)
     candidates = [p for p in (_poi_by_id(i) for i in ids[:3]) if p]
     if not candidates:
-        # 去掉链接和分享套话，剩下的当作店名搜
-        keyword = URL_RE.sub(" ", text)
-        keyword = re.sub(r"[【】\[\]「」·•|]|人均\s*\S*元?|大众点评|美团|高德地图|分享|推荐|快来看看|小程序", " ", keyword)
-        keyword = " ".join(keyword.split())[:40]
         if not keyword:
-            return "没能从内容里识别出店名，请直接告诉我店名和城市"
+            return "没能从内容里识别出店名，请直接告诉我店名"
         candidates = _poi_search(keyword, city)
     if not candidates:
-        return "高德上没搜到这家店，可以换个店名或补充城市再试"
-    lines = []
+        return "店库和高德上都没找到这家店，可以换个店名再试"
+    lines = ["店库里没有，高德上的候选（用 save_place 入库）："]
     for i, p in enumerate(candidates[:5], 1):
         lines.append(
             f"{i}. {p['name']}｜{p['city']}{p['district']} {p['address']}｜"
-            f"{(p['category'] or '').split(';')[-1]}｜评分{p['rating'] or '无'}｜POI ID：{p['poi_id']}"
+            f"{(p['category'] or '').split(';')[-1]}｜高德评分{p['rating'] or '无'}｜POI ID：{p['poi_id']}"
         )
     return "\n".join(lines)
 
 
 @server.tool()
-def save_place(poi_id: str, note: str = "", added_by: str = "", source: str = "") -> str:
-    """把一家店存进美食地图。先用 find_place 拿到 POI ID 再调用。
-    同一家店重复保存时，只更新备注和推荐人。
+def save_place(poi_id: str, added_by: str = "", note: str = "", source: str = "", msg_key: str = "", said_at: str = "") -> str:
+    """把高德上的一家店收进店库（先用 find_place 拿到 POI ID）。已经在库里就直接返回它的编号。
+    传了 added_by 时，顺便给这家店记一条「分享」口碑（note 作为原话）；
+    群友明确评价了好坏的，入库后另用 record_mention 记推荐 / 踩雷。
 
     poi_id: 高德 POI ID（B0 开头）
-    note: 群友的评价或推荐理由，可选
-    added_by: 推荐人昵称，可选
+    added_by: 分享人昵称，可选
+    note: 分享时说的话，可选
     source: 来源，例如「高德分享」「大众点评分享」「群聊」，可选
+    msg_key: 来源消息标识（旁听时系统提示里给的），可选，用于去重
+    said_at: 消息时间，例如「2026-10-25 12:01:02」，可选
     """
-    p = _poi_by_id(poi_id.strip())
-    if not p:
-        return f"高德上查不到这个 POI ID：{poi_id}"
+    poi_id = poi_id.strip()
     with _db() as conn:
-        existing = conn.execute("SELECT * FROM places WHERE poi_id = ?", (p["poi_id"],)).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE places SET note = COALESCE(NULLIF(?, ''), note), added_by = COALESCE(NULLIF(?, ''), added_by) WHERE id = ?",
-                (note, added_by, existing["id"]),
-            )
-            row = conn.execute("SELECT * FROM places WHERE id = ?", (existing["id"],)).fetchone()
-        if existing:
-            _export_map_data()
-            return "这家店已经在美食地图里了，已更新备注：\n" + _place_line(row)
-        cur = conn.execute(
-            """INSERT INTO places (poi_id, name, city, district, address, lng, lat, category, tel,
-                                   rating, cost, photo_url, note, added_by, source, origin, created_at)
-               VALUES (:poi_id, :name, :city, :district, :address, :lng, :lat, :category, :tel,
-                       :rating, :cost, :photo_url, :note, :added_by, :source, '群友分享', :created_at)""",
-            {**p, "note": note, "added_by": added_by, "source": source, "created_at": int(time.time())},
-        )
-        row = conn.execute("SELECT * FROM places WHERE id = ?", (cur.lastrowid,)).fetchone()
-    _export_map_data()
-    return "已收录：\n" + _place_line(row) + "\n地图：" + _map_link(row["lng"], row["lat"], row["name"])
+        row = conn.execute("SELECT * FROM places WHERE poi_id = ?", (poi_id,)).fetchone()
+        existed = row is not None
+        if not existed:
+            p = _poi_by_id(poi_id)
+            if not p:
+                return f"高德上查不到这个 POI ID：{poi_id}"
+            row = _insert_place(conn, p, source)
+        if added_by.strip():
+            via = "分享卡片" if "分享" in source else "自动抽取"
+            _write_mention(conn, row["id"], added_by, "分享", note, "", 0, via, msg_key, said_at)
+    head = "这家店已经在店库里了：\n" if existed else "已收录：\n"
+    return head + _place_line(row) + _with_link(row)
 
 
 @server.tool()
-def search_places(keyword: str = "", city: str = "", limit: int = 10) -> str:
-    """在已收录的美食地图里查店，按店名、分类、地址、备注模糊匹配。
+def record_mention(
+    place_id: int,
+    sender: str,
+    kind: str,
+    quote: str = "",
+    tags: str = "",
+    score: int = 0,
+    via: str = "自动抽取",
+    msg_key: str = "",
+    said_at: str = "",
+) -> str:
+    """给一家已在店库里的店记一条群友口碑。同一条消息（msg_key）对同一家店只记一次。
+
+    place_id: 店铺编号（# 后面的数字）
+    sender: 谁说的（群昵称）
+    kind: 推荐 / 踩雷 / 一般 / 去过 / 想去 / 分享 之一。转述别人、自己没去过的记「想去」
+    quote: 原话，尽量保留原文，推荐时会引用
+    tags: 要点，逗号分隔，例如「毛肚好吃,排队久,适合聚餐」
+    score: 1～5 分，只有打卡指令或原话里明确给了分才填，否则填 0
+    via: 自动抽取 / 打卡指令 / 分享卡片
+    msg_key: 消息标识（旁听时系统提示里给的），用于去重
+    said_at: 消息时间，例如「2026-10-25 12:01:02」，不填就用现在
+    """
+    kind = kind.strip()
+    if kind not in MENTION_KINDS:
+        return f"kind 只能是：{'、'.join(MENTION_KINDS)}"
+    if not sender.strip():
+        return "sender 不能为空"
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM places WHERE id = ?", (int(place_id),)).fetchone()
+        if not row:
+            return f"没有编号为 {place_id} 的店，先用 find_place 找到它"
+        if not _write_mention(conn, row["id"], sender, kind, quote, tags, score, via, msg_key, said_at):
+            return f"这条消息已经给 {row['name']} 记过了"
+    score_text = f" {int(score)}分" if 1 <= int(score or 0) <= 5 else ""
+    return f"已记录：{sender.strip()} 对 #{row['id']} {row['name']}：{kind}{score_text}" + (f"（{tags}）" if tags else "")
+
+
+@server.tool()
+def recommend(keyword: str = "", near: str = "", max_km: float = 0, max_cost: float = 0, limit: int = 5) -> str:
+    """按条件从店库里挑店推荐，群友口碑优先：有人推荐过的排前面，有人踩雷的往后放，
+    其次看高德评分和距离。结果带距离、口碑摘要、群友原话和高德链接。
+
+    keyword: 分类或口味关键词，例如「火锅」「面」「咖啡」「烧烤」，也会匹配群友口碑里的要点；不限就留空
+    near: 从哪出发，留空表示云谷中心；也可以是地点名，例如「西溪印象城」
+    max_km: 最远多少公里，0 表示不限
+    max_cost: 人均上限（元），0 表示不限
+    limit: 推荐几家，默认 5
+    """
+    with _db() as conn:
+        if near.strip():
+            c = _locate(near)
+            if not c:
+                return f"高德上找不到这个地点：{near}"
+            lng0, lat0, where = c[0], c[1], near.strip()
+        else:
+            lng0, lat0, where = _center(conn)
+        sql, args = f"SELECT p.* FROM places p WHERE {OPEN} AND p.lng IS NOT NULL", []
+        if keyword.strip():
+            kw = f"%{keyword.strip()}%"
+            sql += (" AND (p.name LIKE ? OR p.category LIKE ? OR p.note LIKE ? OR p.id IN "
+                    "(SELECT place_id FROM mentions WHERE tags LIKE ? OR quote LIKE ?))")
+            args += [kw] * 5
+        rows = conn.execute(sql, args).fetchall()
+        hits = []
+        for r in rows:
+            d = _dist_km(lng0, lat0, r["lng"], r["lat"])
+            cost = _num(r["cost"])
+            if max_km and d > max_km:
+                continue
+            if max_cost and cost is not None and cost > max_cost:
+                continue
+            hits.append((d, r))
+        stats = _mention_stats(conn, [r["id"] for _, r in hits])
+
+    def rank(item):
+        d, r = item
+        s = stats.get(r["id"])
+        rating = _num(r["rating"]) or 3.0
+        mouth = (s["good"] * 3 - s["bad"] * 4 + s["total"] * 0.5) if s else 0
+        return mouth + rating - d * 0.4
+
+    hits.sort(key=rank, reverse=True)
+    hits = hits[: max(1, min(int(limit), 10))]
+    if not hits:
+        return "店库里没有符合条件的店，可以放宽距离、人均或换个关键词"
+    lines = [f"从{where}出发："]
+    for d, r in hits:
+        lines.append(_place_line(r, stats.get(r["id"]), d) + _with_link(r))
+    return "\n".join(lines)
+
+
+@server.tool()
+def place_detail(place_id: int) -> str:
+    """一家店的全部信息：高德资料（地址、电话、营业时间、评分、人均）、所有群友口碑、谁去过、谁想去、高德链接。
+
+    place_id: 店铺编号
+    """
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM places WHERE id = ?", (int(place_id),)).fetchone()
+        if not row:
+            return f"没有编号为 {place_id} 的店"
+        mentions = conn.execute(
+            "SELECT * FROM mentions WHERE place_id = ? ORDER BY said_at DESC, id DESC LIMIT 20", (row["id"],)
+        ).fetchall()
+        s = _mention_stats(conn, [row["id"]]).get(row["id"])
+    lines = [_place_line(row)]
+    if row["tel"]:
+        lines.append(f"电话：{row['tel']}")
+    if row["open_time"]:
+        lines.append(f"营业时间：{row['open_time']}")
+    if row["status"] == "疑似关店":
+        lines.append("注意：最近两次底库更新在高德上都没搜到，可能已经关店")
+    if s:
+        lines.append(_stats_text(s))
+        if s["went"]:
+            lines.append("去过：" + "、".join(sorted(s["went"])))
+        if s["want"]:
+            lines.append("想去：" + "、".join(sorted(s["want"])))
+    if mentions:
+        lines.append("群友说过：")
+        for m in mentions:
+            when = time.strftime("%m-%d", time.localtime(m["said_at"])) if m["said_at"] else ""
+            score = f" {m['score']}分" if m["score"] else ""
+            body = m["quote"] or m["tags"] or ""
+            lines.append(f"- {when} {m['sender'] or '群友'} {m['kind']}{score}" + (f"：{body}" if body else ""))
+    else:
+        lines.append("群里还没人评价过这家")
+    if row["lng"] is not None:
+        lines.append("高德：" + _map_link(row["lng"], row["lat"], row["name"]))
+    return "\n".join(lines)
+
+
+@server.tool()
+def who_wants(keyword: str = "", place_id: int = 0) -> str:
+    """组局用：哪些人想去、去过某家店或某类店。都不传时列出想去人数最多的店。
+
+    keyword: 店名或分类关键词，例如「火锅」，可选
+    place_id: 店铺编号，可选，优先于 keyword
+    """
+    with _db() as conn:
+        sql = f"SELECT p.* FROM places p WHERE {OPEN} AND p.id IN (SELECT place_id FROM mentions)"
+        args = []
+        if place_id:
+            sql += " AND p.id = ?"
+            args.append(int(place_id))
+        elif keyword.strip():
+            kw = f"%{keyword.strip()}%"
+            sql += " AND (p.name LIKE ? OR p.category LIKE ?)"
+            args += [kw, kw]
+        rows = conn.execute(sql, args).fetchall()
+        stats = _mention_stats(conn, [r["id"] for r in rows])
+    rows = [r for r in rows if stats.get(r["id"]) and (stats[r["id"]]["want"] or stats[r["id"]]["went"])]
+    rows.sort(key=lambda r: (len(stats[r["id"]]["want"]), len(stats[r["id"]]["went"])), reverse=True)
+    if not rows:
+        return "还没有人说过想去或去过符合条件的店"
+    lines = []
+    for r in rows[:10]:
+        s = stats[r["id"]]
+        parts = [f"#{r['id']} {r['name']}"]
+        if s["want"]:
+            parts.append("想去：" + "、".join(sorted(s["want"])))
+        if s["went"]:
+            parts.append("去过：" + "、".join(sorted(s["went"])))
+        lines.append("｜".join(parts))
+    return "\n".join(lines)
+
+
+@server.tool()
+def search_places(keyword: str = "", limit: int = 10) -> str:
+    """在店库里按店名、分类、地址查店（不排序推荐，适合「有没有 XX 店」这类问题）。
     keyword 留空时返回最近收录的店。
 
-    keyword: 关键词，例如「火锅」「五角场」
-    city: 城市，可选
+    keyword: 关键词，例如「火锅」「印象城」
     limit: 最多返回几家，默认 10
     """
-    sql, args = "SELECT * FROM places WHERE COALESCE(status, '') != '疑似关店'", []
+    sql, args = f"SELECT p.* FROM places p WHERE {OPEN}", []
     if keyword:
-        sql += " AND (name LIKE ? OR category LIKE ? OR address LIKE ? OR district LIKE ? OR note LIKE ?)"
+        sql += " AND (p.name LIKE ? OR p.category LIKE ? OR p.address LIKE ? OR p.district LIKE ? OR p.note LIKE ?)"
         args += [f"%{keyword}%"] * 5
-    if city:
-        sql += " AND city LIKE ?"
-        args.append(f"%{city}%")
-    sql += " ORDER BY created_at DESC LIMIT ?"
+    sql += " ORDER BY p.created_at DESC LIMIT ?"
     args.append(max(1, min(int(limit), 30)))
     with _db() as conn:
         rows = conn.execute(sql, args).fetchall()
+        stats = _mention_stats(conn, [r["id"] for r in rows])
     if not rows:
-        return "美食地图里还没有符合条件的店"
-    return "\n".join(_place_line(r) for r in rows)
+        return "店库里还没有符合条件的店"
+    return "\n".join(_place_line(r, stats.get(r["id"])) for r in rows)
 
 
 @server.tool()
-def nearby_places(location: str, radius_km: float = 3, limit: int = 10) -> str:
-    """查某个地点附近已收录的店，按距离从近到远。
+def nearby_places(location: str = "", radius_km: float = 1.5, limit: int = 10) -> str:
+    """查某个地点附近的店，按距离从近到远。
 
-    location: 地点或地址，例如「上海五角场」「杭州西湖」，或群友发的微信位置里的地点名和地址
-    radius_km: 半径（公里），默认 3
+    location: 地点或地址，例如「西溪印象城」，或群友发的微信位置里的地点名和地址；留空表示云谷中心
+    radius_km: 半径（公里），默认 1.5
     limit: 最多返回几家，默认 10
     """
-    center = _locate(location)
-    if not center:
-        return f"高德上找不到这个地点：{location}"
-    lng0, lat0 = center
     with _db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM places WHERE lng IS NOT NULL AND lat IS NOT NULL AND COALESCE(status, '') != '疑似关店'"
-        ).fetchall()
-
-    def dist_km(r):
-        # 球面距离（haversine），城市范围内足够准确
-        p1, p2 = math.radians(lat0), math.radians(r["lat"])
-        dp, dl = p2 - p1, math.radians(r["lng"] - lng0)
-        a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-        return 6371 * 2 * math.asin(math.sqrt(a))
-
-    hits = sorted(((dist_km(r), r) for r in rows), key=lambda x: x[0])
-    hits = [(d, r) for d, r in hits if d <= radius_km][: max(1, min(int(limit), 30))]
+        if location.strip():
+            center = _locate(location)
+            if not center:
+                return f"高德上找不到这个地点：{location}"
+            lng0, lat0, where = center[0], center[1], location.strip()
+        else:
+            lng0, lat0, where = _center(conn)
+        rows = conn.execute(f"SELECT p.* FROM places p WHERE p.lng IS NOT NULL AND p.lat IS NOT NULL AND {OPEN}").fetchall()
+        hits = sorted(((_dist_km(lng0, lat0, r["lng"], r["lat"]), r) for r in rows), key=lambda x: x[0])
+        hits = [(d, r) for d, r in hits if d <= radius_km][: max(1, min(int(limit), 30))]
+        stats = _mention_stats(conn, [r["id"] for _, r in hits])
     if not hits:
-        return f"{location} 附近 {radius_km} 公里内还没有收录的店"
-    return "\n".join(f"{_place_line(r)}｜距离{d:.1f}公里" for d, r in hits)
+        return f"{where} 附近 {radius_km} 公里内店库里还没有店"
+    return "\n".join(_place_line(r, stats.get(r["id"]), d) for d, r in hits)
 
 
 @server.tool()
 def place_map_link(place_id: int) -> str:
-    """生成某家已收录店铺的高德地图链接（手机点开即可导航）。
+    """生成某家店的高德地图链接（手机点开唤起高德 App，可导航）。
 
-    place_id: 店铺在美食地图里的编号（查询结果里 # 后面的数字）
+    place_id: 店铺编号（查询结果里 # 后面的数字）
     """
     with _db() as conn:
         row = conn.execute("SELECT * FROM places WHERE id = ?", (int(place_id),)).fetchone()
@@ -373,7 +684,7 @@ def _download(url, params, filename):
 
 @server.tool()
 def place_images(place_id: int, include_photo: bool = True) -> str:
-    """生成某家已收录店铺的图片：高德静态地图（标出店铺位置），以及高德上的店铺照片（如果有）。
+    """生成某家店的图片：高德静态地图（标出店铺位置），以及高德上的店铺照片（如果有）。
     返回的每张图片是单独一行「[图片]本地路径」，回复时把这些行原样单独成行写出，机器人会把它们作为图片发到群里。
 
     place_id: 店铺编号
@@ -407,7 +718,7 @@ def place_images(place_id: int, include_photo: bool = True) -> str:
 
 @server.tool()
 def delete_place(place_id: int) -> str:
-    """从美食地图里删除一家店。只在群友明确要求删除时调用。
+    """从店库里删除一家店和它的口碑。只在群友明确要求删除时调用。
 
     place_id: 店铺编号
     """
@@ -415,20 +726,10 @@ def delete_place(place_id: int) -> str:
         row = conn.execute("SELECT * FROM places WHERE id = ?", (int(place_id),)).fetchone()
         if not row:
             return f"没有编号为 {place_id} 的店"
+        conn.execute("DELETE FROM mentions WHERE place_id = ?", (int(place_id),))
         conn.execute("DELETE FROM places WHERE id = ?", (int(place_id),))
-    _export_map_data()
     return f"已删除：{row['name']}"
 
 
-@server.tool()
-def map_page_link() -> str:
-    """返回美食地图网页的链接：一张地图上标出所有收录的店，可搜索。群友想看全部店铺、要「地图」时发这个链接。"""
-    url = os.environ.get("FOOD_MAP_URL", "").strip()
-    if not url:
-        return "网页地图还没有配置对外访问地址（环境变量 FOOD_MAP_URL）"
-    return f"美食地图（共收录的店都在上面）：{url}"
-
-
 if __name__ == "__main__":
-    _export_map_data()
     server.run()

@@ -6,12 +6,6 @@
   "api_keys": [
     "改成一串随机字符，面板里接口的 Key 填同一串"
   ],
-  "public": {
-    "/food-map": [
-      "data/map",
-      "public/food-map"
-    ]
-  },
   "llm": {
     "base_url": "https://api.deepseek.com",
     "api_key_env": "DEEPSEEK_API_KEY",
@@ -30,9 +24,7 @@
       "args": [
         "mcp_servers/food_server.py"
       ],
-      "env": {
-        "FOOD_MAP_URL": "部署网页地图后填对外访问地址，例如 https://xxx.ts.net/food-map/"
-      }
+      "env": {}
     }
   },
   "agents": {
@@ -44,19 +36,19 @@
       "max_tool_rounds": 5,
       "use_client_prompt": true
     },
-    "food": {
-      "prompt_file": "agents/food.md",
+    "yungu-food": {
+      "prompt_file": "agents/yungu-food.md",
       "mcp": [
         "food"
       ],
-      "max_tool_rounds": 6,
+      "max_tool_rounds": 8,
       "use_client_prompt": true,
       "auto_reply": {
         "judge_llm": {},
         "context_messages": 8,
-        "reply_when": "有人问吃什么、去哪吃、某家店怎么样、求推荐餐厅",
+        "reply_when": "有人问吃什么、去哪吃、求推荐餐厅；有人问某家店怎么样、在哪、要不要排队；有人打卡（例如「打卡 店名 4分 好吃」）或明确让机器人记一家店。单纯评价一家店、分享店铺卡片、发定位但没提问的，不接话；其它闲聊不接话",
         "labels": {
-          "review": "这句话在评价某家具体的店（好吃、难吃、推荐、踩雷），或分享了店铺卡片"
+          "review": "这句话在评价某家具体的店（好吃、难吃、推荐、踩雷、排队久），说去过或想去某家店，或分享了店铺卡片、定位"
         },
         "silent_on_labels": [
           "review"

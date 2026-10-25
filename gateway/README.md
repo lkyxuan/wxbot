@@ -4,7 +4,7 @@
 
 ```
 微信群 ──> SiverWXbot（只管收发） ──> 本网关（OpenAI 兼容接口）
-                                         │  model = 智能体名，例如 crypto / food
+                                         │  model = 智能体名，例如 crypto / yungu-food
                                          ├─ 智能体 = 提示词 + 一组工具
                                          ├─ 调大模型（DeepSeek 等，支持工具调用即可）
                                          └─ 工具 = 各个产品的 MCP 服务（各自的数据库、程序）
@@ -22,9 +22,8 @@
 | `config.example.json` | 配置模板，复制成 `config.json` 使用（`config.json` 不会提交到仓库） |
 | `agents/*.md` | 各智能体的提示词 |
 | `mcp_servers/crypto_server.py` | 示例产品：加密货币行情（CoinGecko 公共接口） |
-| `mcp_servers/food_server.py` | 美食地图：识别分享卡片、高德查店、本地 SQLite 收录、附近查询、地图链接 |
+| `mcp_servers/food_server.py` | 云谷美食：店库（高德）+ 群友口碑，识别分享卡片、推荐、记口碑、组局、高德链接 |
 | `refresh_base.py` / `refresh_base.bat` | 美食底库：按圆心和半径从高德批量拉周边餐饮店，每周更新 |
-| `public/food-map/` | 美食网页地图页面（含 Leaflet 1.9.4，BSD-2 许可） |
 | `start_gateway.bat` | Windows 一键启动 |
 | `tests/` | 单元测试（`python -m pytest tests`，需另装 pytest） |
 
@@ -49,16 +48,20 @@
 2. **群聊设置**：在测试群那一行，「AI 接口」下拉选刚加的接口。
 3. 面板里给这个群选的 Prompt 仍然生效，会接在智能体提示词后面，适合调人设和语气。不想要的话，在智能体配置里设 `"use_client_prompt": false`。
 
-## 美食地图
+## 云谷美食（智能体 `yungu-food`）
+
+店库分两层：店铺来自高德（底库脚本批量拉云谷周边 + 群友分享），口碑是群友说过的话（推荐、踩雷、去过、想去），推荐时口碑优先。店铺都用高德链接分享，手机点开唤起高德 App，不自建网页。
 
 1. 在[高德开放平台](https://lbs.amap.com)注册并做个人认证，创建「Web 服务」类型的 Key，设到环境变量 `AMAP_KEY`。个人认证开发者每月免费 5000 次搜索、15 万次地理编码。
-2. 面板新增接口（模型填 `food`），把美食群映射过去。
+2. 面板新增接口（模型填 `yungu-food`），把美食群映射过去。想让它旁听记口碑、自己判断接不接话，给这个群勾上「AI 判断接话」（见下文）。
 3. 群设置里开了「仅@时回复」的话，同时打开「分享卡片也回复」，这样群友转发大众点评、高德卡片不用 @ 也会被收录。
 4. 数据存在 `gateway/data/food.db`（SQLite），不会提交到仓库，记得定期备份。
 5. 发图片（静态地图、店铺照片）：图片下载到 `gateway/data/images/`。在机器人的 `config/config.json` 里加上
    `"ai_reply_image_dirs": ["D:\\SiverWXbot_plus\\gateway\\data\\images"]`（换成实际路径）。机器人只会发送这个目录里的图片，没配置就不发图。
+6. 群友打卡：「@机器人 打卡 店名 4分 毛肚好吃」，记一条带分数的口碑。平时聊天里的评价在旁听模式下自动记，不出声。
 
-6. 网页地图：浏览器打开 `http://127.0.0.1:8100/food-map/` 可以看到所有收录的店（底图用高德，可搜索）。这个路径不需要 Key，其余接口仍需要。要让群友手机能打开，需要把这个路径对外公开（例如 Tailscale Funnel 只公开 `/food-map`），再把公开地址填到 `mcp_servers.food.env.FOOD_MAP_URL`。
+工具：`find_place`（先查店库，没有再搜高德）、`save_place`（入库）、`record_mention`（记口碑，同一条消息不重复记）、`recommend`（按口味、距离、人均挑店，口碑优先）、`place_detail`、`who_wants`（谁想去、谁去过）、`nearby_places`（默认云谷中心）、`search_places`、`place_map_link`、`place_images`、`delete_place`。
+
 
 ### 美食底库（云谷周边）
 
@@ -74,7 +77,7 @@ python refresh_base.py --center 120.02,30.28 --radius 5000   # 换圆心 / 半�
 
 - 圆心默认用高德在杭州搜「云谷中心」的第一个结果，第一次运行后存进数据库，之后一直用同一个点；要换就传 `--center 经度,纬度` 或 `--center-name 地名`。
 - 已有的店只更新高德字段（评分、人均、营业时间、电话、照片），群友的备注和推荐人不动；群友分享的店在半径内也会被刷新。
-- 这次没搜到的底库店记一次缺席，连续两次标为「疑似关店」，不删除，网页地图上不再显示。没拉完的一次（配额用完、报错）不做这个判断。
+- 这次没搜到的底库店记一次缺席，连续两次标为「疑似关店」，不删除，查询和推荐时不再出现。没拉完的一次（配额用完、报错）不做这个判断。
 - 高德一次查询能翻到的条数有上限，脚本把范围切成 1 公里的格子，某格结果满 200 条就四分再搜。7 公里半径估计一次几百次搜索，每周一次一个月一两千次，`--max-calls`（默认 1500）防止意外用光每月 5000 次的配额。
 - 每周更新：把 `AMAP_KEY` 设成系统环境变量，然后用计划任务每周一凌晨 3 点运行 `refresh_base.bat`（日志写到 `data/refresh_base.log`）：
   `schtasks /create /tn "云谷美食底库" /tr "D:\SiverWXbot_plus\gateway\refresh_base.bat" /sc weekly /d MON /st 03:00`（换成实际路径）
@@ -86,7 +89,7 @@ python refresh_base.py --center 120.02,30.28 --radius 5000   # 换圆心 / 半�
 默认机器人只在被 @（或命中规则）时才把消息发给网关。想让某个群每句话都交给 AI、由它决定接不接：
 
 1. 机器人面板「群聊设置」里，给这个群勾上「AI 判断接话」。勾了的群不受「仅@时回复」限制，每条消息都发给网关，并带上 `X-WX-Mentioned`（有没有 @ 机器人）、群名、发言人请求头。
-2. 在这个群的智能体配置里加 `auto_reply`（见 `config.example.json` 里的 `food`）：
+2. 在这个群的智能体配置里加 `auto_reply`（见 `config.example.json` 里的 `yungu-food`）：
 
 | 字段 | 作用 |
 |---|---|

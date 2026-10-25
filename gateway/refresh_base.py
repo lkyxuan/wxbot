@@ -30,7 +30,7 @@ import time
 import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_servers"))
-from food_server import _db, _export_map_data  # noqa: E402
+from food_server import _db  # noqa: E402
 
 API_BASE = os.environ.get("AMAP_API_BASE", "https://restapi.amap.com")
 TIMEOUT = 15
@@ -276,7 +276,6 @@ def main():
         for r in conn.execute("SELECT id, lng, lat FROM places WHERE lng IS NOT NULL AND lat IS NOT NULL").fetchall():
             conn.execute("UPDATE places SET distance_m = ? WHERE id = ?", (round(dist_m(lng0, lat0, r["lng"], r["lat"])), r["id"]))
     conn.close()
-    _export_map_data()
 
     log(
         f"完成：半径内 {len(found)} 家，新增 {new} 家，更新 {len(found) - new} 家；"
