@@ -293,7 +293,9 @@ class AutoReply:
             text = content_text(m.get("content")).strip()
             if not text:
                 continue
-            # 机器人发过的话标成「机器人」；群友的消息本来就是「昵称: 内容」
+            # 机器人发过的话标成「机器人」；群友的消息本来就是「昵称: 内容」。
+            # 一条消息可能有多行（合并回复会用换行拼起来），压成一行，保证一行就是一条消息
+            text = " / ".join(part.strip() for part in text.splitlines() if part.strip())
             lines.append(f"机器人: {text}" if role == "assistant" else text)
         return lines[-limit:] if limit > 0 else lines
 
@@ -307,14 +309,16 @@ class AutoReply:
         label_rules = "\n".join(f"- {name}：{desc}" for name, desc in labels.items()) or "（无）"
         label_example = ", ".join(f'"{name}": false' for name in labels)
         system = (
-            "你在帮一个微信群里的 AI 助手判断：群里最新这条消息（最后一行），助手要不要主动接话。"
+            "你在帮一个微信群里的 AI 助手判断：群里最新这条消息（标了【最新】的那条），助手要不要主动接话。"
             "这条消息没有 @ 助手，大多数闲聊都不该接，拿不准时不接。\n\n"
             f"需要接话的情况：\n{ar.get('reply_when') or '有人明显在向助手提问或求助'}\n\n"
-            f"另外判断这些标签（只看最后一行）：\n{label_rules}\n\n"
+            f"另外判断这些标签（只看【最新】那条）：\n{label_rules}\n\n"
             "只输出一个 JSON 对象，不要别的文字，格式：\n"
             f'{{"reply": false, "labels": {{{label_example}}}}}'
         )
-        user = "最近的群聊（每行「昵称: 内容」，最后一行是最新消息）：\n" + "\n".join(lines)
+        lines[-1] = "【最新】" + lines[-1]
+        user = ("最近的群聊（每行一条消息，格式「昵称: 内容」，一条消息里的换行写成「 / 」）：\n"
+                + "\n".join(lines))
         llm = dict(self.runner.cfg.get("llm", {}))
         llm.update(agent.get("llm", {}))
         llm.update(ar.get("judge_llm", {}))
@@ -371,7 +375,11 @@ class AutoReply:
             note = "这条消息没有 @ 你，是你判断后主动接话。"
             if hit:
                 note += f"判断阶段命中的标签：{'、'.join(hit)}。"
-            content = self.runner.run(agent_name, messages, [base_note, note])
+            try:
+                content = self.runner.run(agent_name, messages, [base_note, note])
+            except Exception:
+                self._release_cooldown(cooldown_key)
+                raise
             if not content or content.strip() == NO_REPLY:
                 self._release_cooldown(cooldown_key)
             return content
