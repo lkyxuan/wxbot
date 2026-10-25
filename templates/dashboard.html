@@ -860,6 +860,11 @@ html.icons-pref-local [class*=" bi-"]::before {
         <span class="switch-desc">仅在被@时才回复群消息</span>
       </div>
       <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="group_link_reply" name="group_link_reply" {% if config.group_link_reply %}checked{% endif %}>
+        <label for="group_link_reply">分享卡片也回复</label>
+        <span class="switch-desc">开启「仅@时回复」时，群友转发的链接、小程序卡片（如大众点评、高德）和位置不用@也交给 AI</span>
+      </div>
+      <div class="switch-row">
         <input class="form-check-input" type="checkbox" id="group_reply_at_msg" name="group_reply_at_msg" {% if config.group_reply_at_msg %}checked{% endif %}>
         <label for="group_reply_at_msg">回复时@发言人</label>
         <span class="switch-desc">回复群消息时@发言人</span>
