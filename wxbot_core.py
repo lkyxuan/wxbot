@@ -4185,14 +4185,20 @@ class WXBot:
     def _get_group_prompt(self, group_name, sender=None):
         """获取群组对应的 prompt 内容。
 
-        优先级：group_sender_prompt_map[群][发言人] > group_prompt_map[群] > default_prompt。
+        基础是群 prompt（group_prompt_map[群]，未配置则 default_prompt）；
+        若 group_sender_prompt_map[群][发言人] 有配置，把它作为"当前发言人的专属设定"接在后面（叠加，不替换）。
         发言人按群里显示的名字匹配（好友备注或群昵称），wxautox4 拿不到微信 ID。
         """
+        base_name = self.config.group_prompt_map.get(group_name) or self.config.default_prompt
+        base = self.config.get_prompt_content(base_name)
         sender_map = (self.config.group_sender_prompt_map or {}).get(group_name) or {}
-        name = (sender and sender_map.get(sender)) \
-            or self.config.group_prompt_map.get(group_name) \
-            or self.config.default_prompt
-        return self.config.get_prompt_content(name)
+        sender_name = sender and sender_map.get(sender)
+        if not sender_name or sender_name == base_name:
+            return base
+        extra = self.config.get_prompt_content(sender_name)
+        if not extra or extra == base:
+            return base
+        return f"{base}\n\n【当前发言人「{sender}」的专属设定】\n{extra}" if base else extra
 
     def _send_group_reply(self, chat, message, content, at_sender=False, quote=False):
         """发送群聊回复；引用失败时降级为普通发送，避免中断监听回调。
