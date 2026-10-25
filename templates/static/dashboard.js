@@ -1645,6 +1645,15 @@ $(function(){
         (configData.group_sender_prompt_map[name] = configData.group_sender_prompt_map[name] || {})[sdr]=p;
       });
     });
+    // 不在监听列表里的群（如被 /删除群 移出）没有卡片：原样保留它们的发言人 Prompt，重新加回来时还在
+    (function(){
+      var cfg = window.__GROUP_CFG__ || {}, listed = cfg.group || [];
+      $.each(cfg.group_sender_prompt_map || {}, function(g, senders){
+        if (listed.indexOf(g) === -1 && !configData.group_sender_prompt_map[g]) {
+          configData.group_sender_prompt_map[g] = senders;
+        }
+      });
+    })();
     // --- ⑥ 新好友招呼消息 + 关键词字典 ---
     $('[name="new_friend_msg"]').each(function(){ if($(this).val()) configData.new_friend_msg.push($(this).val()); });
     var keys=$('input[name="keyword_key"]'), vals=$('textarea[name="keyword_value"]');
