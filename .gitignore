@@ -6,7 +6,8 @@ wx.png
 wxautox_activate.py
 CLAUDE.md
 
-.claude/
+.claude/*
+!.claude/settings.json
 .venv
 venv/
 venv2/
