@@ -14,7 +14,7 @@
 
 用法（在 gateway 目录下）：
     set AMAP_KEY=你的 Key
-    python refresh_base.py                        # 圆心默认搜「云谷中心」，半径 3000 米
+    python refresh_base.py                        # 圆心默认搜「云谷中心」，半径 7000 米
     python refresh_base.py --center 120.02,30.28  # 指定圆心（高德坐标，经度,纬度）
     python refresh_base.py --radius 5000 --dry-run
 圆心第一次确定后存进数据库，之后每周都用同一个点；要换就再传 --center 或 --center-name。
@@ -211,7 +211,7 @@ def main():
     ap = argparse.ArgumentParser(description="云谷美食底库初始化 / 每周更新")
     ap.add_argument("--center", help="圆心坐标「经度,纬度」（高德 GCJ-02）")
     ap.add_argument("--center-name", help="圆心地名，用高德在杭州搜，默认「云谷中心」")
-    ap.add_argument("--radius", type=int, default=3000, help="半径（米），默认 3000")
+    ap.add_argument("--radius", type=int, default=7000, help="半径（米），默认 7000")
     ap.add_argument("--cell", type=int, default=1000, help="初始格子边长（米），默认 1000")
     ap.add_argument("--qps", type=float, default=2, help="每秒最多请求几次，默认 2")
     ap.add_argument("--max-calls", type=int, default=1500, help="本次最多调用几次高德，保护月配额，默认 1500")
