@@ -223,6 +223,11 @@ API_ERROR_REPLY    = "API返回错误，请稍后再试"
 # ============================================================
 MEDIA_CARRIER_TEXT = "1"
 
+# 群聊里算作「分享卡片」的消息类型（见 group_link_reply）。wxautox4 里小程序卡片
+# 可能被识别为 link 或 other，content 只有卡片上能看到的标题、描述和来源，拿不到 URL；
+# 位置消息（location）的 content 是地点名和地址，可用来查「附近有什么」。
+GROUP_CARD_MSG_TYPES = ('link', 'miniapp', 'other', 'location')
+
 # ============================================================
 # 消息类发送：可自动作为「文件」发送的扩展名
 # ------------------------------------------------------------
@@ -349,6 +354,50 @@ SPLIT_PROMPT_TEMPLATE = """\
 # ============================================================
 THINK_BLOCK_RE = re.compile(r'<think\b[^>]*>.*?</think>', re.IGNORECASE | re.DOTALL)
 LEADING_THINK_RE = re.compile(r'^\s*<think\b[^>]*>', re.IGNORECASE)
+# 记忆历史里的时间前缀格式（如 "[2026/10/23 21:04:31]"），模型有时会模仿着放在回复开头
+LEADING_TIMESTAMP_RE = re.compile(
+    r'^[ \t]*[\[【]\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?[\]】][ \t]*',
+    re.MULTILINE,
+)
+
+
+def strip_leading_timestamps(text):
+    """去掉回复里每行开头模仿记忆格式的时间戳。"""
+    if not text:
+        return text
+    return LEADING_TIMESTAMP_RE.sub("", str(text))
+
+
+# ============================================================
+# AI 回复里的图片标记
+# ------------------------------------------------------------
+# 自建网关的工具（例如美食地图的静态地图、店铺照片）会把图片存到本机，
+# 并让 AI 在回复里单独一行写「[图片]本地路径」。群聊发送时把这些行摘出来，
+# 文字照常发送，图片随后用 SendFiles 发出。
+# ⚠ 只发送 ai_reply_image_dirs 目录下真实存在的图片文件：群友可能诱导 AI
+# 写出任意路径，不加目录限制就等于能把本机图片发到群里。默认为空即关闭。
+# ============================================================
+AI_IMAGE_MARKER_RE = re.compile(r'^\s*\[图片\]\s*(.+?\.(?:png|jpe?g|gif|webp|bmp))\s*$', re.IGNORECASE | re.MULTILINE)
+
+
+def extract_ai_reply_images(text, allowed_dirs):
+    """拆出回复里的图片标记行，返回 (去掉标记后的文字, 允许发送的图片路径列表)。"""
+    if not text or '[图片]' not in text:
+        return text, []
+    roots = [os.path.normcase(os.path.realpath(d)) for d in allowed_dirs if d]
+    images = []
+    for raw in AI_IMAGE_MARKER_RE.findall(text):
+        path = os.path.realpath(raw.strip().strip('"').strip("'"))
+        norm = os.path.normcase(path)
+        if not os.path.isfile(path):
+            log(level="WARNING", message=f"AI 回复里的图片不存在，已跳过：{raw}")
+        elif not any(norm.startswith(root + os.sep) for root in roots):
+            log(level="WARNING", message=f"AI 回复里的图片不在 ai_reply_image_dirs 允许的目录内，已跳过：{raw}")
+        elif path not in images:
+            images.append(path)
+    cleaned = AI_IMAGE_MARKER_RE.sub('', text)
+    cleaned = re.sub(r'\n\s*\n+', '\n', cleaned).strip()
+    return cleaned, images
 
 
 def select_group_context(history, sender, recent_count, sender_count):
@@ -524,6 +573,7 @@ class WXBotConfig:
         self.group_switch = False       # 群机器人总开关
         self.group_listen_only = False   # 群聊只监听不 AI 回复
         self.group_reply_at = False     # 群聊是否仅在被 @ 时才回复
+        self.group_link_reply = False   # 仅@时回复模式下，分享卡片（链接/小程序/位置）不 @ 也交给 AI
         self.group_welcome = False      # 群新人欢迎语开关
         self.group_welcome_random = 1.0 # 群新人欢迎语触发概率（0.0~1.0）
         self.group_welcome_msg = "欢迎新朋友！请先查看群公告！"
@@ -596,6 +646,7 @@ class WXBotConfig:
         self.reply_delay_max    = 5     # 最大延迟秒数
         self.clean_ai_reply_switch = True  # AI 回复清洗开关
         self.api_chat_meta_headers = False  # 调用 OpenAI 兼容接口时附带群名/发言人请求头
+        self.ai_reply_image_dirs = []      # 群聊 AI 回复里允许作为图片发送的本地目录（见 extract_ai_reply_images）
 
         # 初始化时自动加载配置并同步到属性
         self.load_config()
@@ -846,6 +897,7 @@ class WXBotConfig:
         self.group_listen_only    = bool(self.config.get('group_listen_only', False))
         self.group_reply_at       = self.config.get('group_reply_at')
         self.group_reply_at_msg   = bool(self.config.get('group_reply_at_msg', True))
+        self.group_link_reply     = bool(self.config.get('group_link_reply', False))
         self.group_reply_quote    = bool(self.config.get('group_reply_quote', False))
         self.group_welcome        = self.config.get('group_welcome')
         self.group_welcome_random = self.config.get('group_welcome_random')
@@ -939,6 +991,7 @@ class WXBotConfig:
         self.reply_delay_max    = self._coerce_int_range(self.config.get('reply_delay_max'), 5, 1, 3600)
         self.clean_ai_reply_switch = bool(self.config.get('clean_ai_reply_switch', True))
         self.api_chat_meta_headers = bool(self.config.get('api_chat_meta_headers', False))
+        self.ai_reply_image_dirs = [str(d) for d in (self.config.get('ai_reply_image_dirs') or []) if str(d).strip()]
 
         # --- 图片识别配置 ---
         self.chat_image_recognition_switch  = bool(self.config.get('chat_image_recognition_switch', False))
@@ -1483,7 +1536,10 @@ class OpenAIAPI:
             t = h.get('time', '')
             raw = h.get('content', '')
             sender = h.get('sender', '')
-            if role == 'user' and sender:
+            if role == 'assistant':
+                # 助手历史不带时间前缀：带了模型会模仿，把 "[2026/10/23 21:04:31]" 也发给用户
+                content = raw
+            elif sender:
                 content = f"[{t}] {sender}: {raw}" if t else f"{sender}: {raw}"
             else:
                 content = f"[{t}] {raw}" if t else raw
@@ -1850,7 +1906,7 @@ class CozeAPI:
                 raw = h.get('content', '')
                 sender = h.get('sender', '')
                 if h.get('attr') == 'self':
-                    content = f"[{t}] {raw}" if t else raw
+                    content = raw   # 助手历史不带时间前缀，避免模型模仿
                     try:
                         additional_messages.append(CozeMessage.build_assistant_answer(content))
                     except Exception:
@@ -2655,6 +2711,11 @@ class WXBot:
 
     def _add_listen_chat_once(self, nickname, label):
         """执行一次 AddListenChat，并记录基础结果。"""
+        # 初始化期间收到停止请求时不再注册：收尾的 StopListening 可能已经先执行了，
+        # 之后再注册的监听会残留下来，下次启动后同一个会话就会被监听两次（消息重复回复）
+        if self.stop_requested():
+            log(level="WARNING", message=f"已收到停止请求，跳过添加{label} {nickname} 监听")
+            return None
         result = self.wx.AddListenChat(nickname=nickname, callback=self.message_handle_callback)
         if result:
             log(message=f"添加{label} {nickname} 监听完成")
@@ -2681,7 +2742,7 @@ class WXBot:
             if nickname and nickname not in seen:
                 expected.append(nickname)
                 seen.add(nickname)
-        if not expected:
+        if not expected or self.stop_requested():
             return
 
         missing = [nickname for nickname in expected if not self._get_verified_subwindow(nickname)]
@@ -3817,8 +3878,11 @@ class WXBot:
                             time.sleep(1)
                             return result
 
+            # 分享卡片（大众点评、高德等）和位置消息本身带不了 @，开了 group_link_reply 时同样交给 AI，
+            # 由群绑定的接口（例如自建网关里的美食助手）决定怎么处理
+            _is_shared_card = self.config.group_link_reply and message.type in GROUP_CARD_MSG_TYPES
             if (self.config.AtMe in message.content and self.config.group_reply_at) \
-                    or not self.config.group_reply_at:
+                    or not self.config.group_reply_at or _is_shared_card:
                 if self.config.group_listen_only:
                     log(message=f"群组 {chat.who} 已启用只监听不AI回复，跳过 AI 调用")
                     return result
@@ -3921,8 +3985,13 @@ class WXBot:
                 else:
                     reply = self._clean_reply_for_send(reply)
 
+                # 摘出「[图片]路径」标记行：文字照常发，图片在文字之后用 SendFiles 发
+                reply, reply_images = extract_ai_reply_images(reply, self.config.ai_reply_image_dirs)
+
                 # 拆分多条回复：首条 @ 发言人，后续条不 @
-                if self.config.group_split_reply_switch:
+                if not reply and reply_images:
+                    parts = []
+                elif self.config.group_split_reply_switch:
                     parts = self._parse_split_reply(reply, self.config.group_split_max_count)
                 else:
                     parts = [reply]
@@ -3955,6 +4024,20 @@ class WXBot:
                         sent_fail += 1
                     if send_aborted:
                         break
+
+                for img_path in ([] if send_aborted else reply_images):
+                    planned += 1
+                    self.config.human_delay()
+                    try:
+                        img_result = chat.SendFiles(img_path)
+                    except Exception as e:
+                        log(level="ERROR", message=f"向 {chat.who} 发送 AI 回复图片失败: {e}")
+                        img_result = False
+                    # SendFiles 成功也常常不返回任何值（None），这里显式当成功
+                    if ReplyCountStore.was_send_success(img_result, none_is_success=True):
+                        sent_ok += 1
+                    else:
+                        sent_fail += 1
 
                 # 汇总本次群聊发送：不能用 bool(SendOutcome.partial) 判断零成功
                 # （部分成功的布尔值就是 False），也不能只看最后一段；未发完一律不算全部成功。
@@ -4133,11 +4216,14 @@ class WXBot:
 
     def _parse_split_reply(self, reply, max_count):
         """按 ||SPLIT|| 分隔符解析回复，过滤空白，截断到 max_count 条"""
-        parts = [p.strip() for p in reply.split(SPLIT_SEPARATOR) if p.strip()]
+        parts = [strip_leading_timestamps(p.strip()).strip() for p in reply.split(SPLIT_SEPARATOR)]
+        parts = [p for p in parts if p]
         return parts[:max_count] if parts else [reply]
 
     def _clean_reply_for_send(self, reply):
         """按配置清洗即将发送给用户的 AI 回复。"""
+        # 时间戳前缀不受清洗开关控制，任何情况下都不该发给用户
+        reply = strip_leading_timestamps(reply)
         if not self.config.clean_ai_reply_switch:
             return reply
         cleaned = clean_ai_reply_text(reply)
@@ -5911,6 +5997,11 @@ class WXBot:
         #   现在只有"初始化成功且期间没有停止请求"才真正开跑。
         if self.stop_requested():
             self.run_flag = False
+            # 停止请求在初始化途中到达时，收尾的 StopListening 可能早于后面的 AddListenChat，
+            # 这里强制让最后的 shutdown 再停一次，清掉停止之后注册的监听
+            with self._wx_lock:
+                if self.wx is not None:
+                    self._listening_started = True
             if init_ok:
                 log(level="WARNING", message='初始化期间收到停止请求，不再进入主循环，立即收尾')
         elif init_ok:

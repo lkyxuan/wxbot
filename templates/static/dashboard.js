@@ -1431,6 +1431,7 @@ $(function(){
       group_listen_only:$('#group_listen_only').is(':checked'),
       group_reply_at:$('#group_reply_at').is(':checked'),
       group_reply_at_msg:$('#group_reply_at_msg').is(':checked'),
+      group_link_reply:$('#group_link_reply').is(':checked'),
       group_reply_quote:$('#group_reply_quote').is(':checked'),
       group_welcome:$('#group_welcome').is(':checked'),
       new_friend_switch:$('#new_friend_switch').is(':checked'),

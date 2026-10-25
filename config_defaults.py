@@ -6,7 +6,7 @@
   - web_server.main() 建文件时的 default_config（96 个键）
   - wxbot_core.create_new_config_file() 的 base_config（96 个键，与上一处是两份重复拷贝）
   - web_server.dashboard() 给老配置补键的 76 个 setdefault
-现在三者合并为本文件的 DEFAULT_CONFIG（98 个键），老配置补键由 apply_defaults() 统一完成。
+现在三者合并为本文件的 DEFAULT_CONFIG（105 个键），老配置补键由 apply_defaults() 统一完成。
 
 迁移原则
 --------
@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
     'group_listen_only': False,
     'group_reply_at': False,
     'group_reply_at_msg': True,
+    'group_link_reply': False,
     'group_reply_quote': False,
     'group_welcome': False,
     'group_welcome_random': 1.0,
@@ -102,6 +103,7 @@ DEFAULT_CONFIG = {
     'reply_delay_max': 5,
     'clean_ai_reply_switch': True,
     'api_chat_meta_headers': False,
+    'ai_reply_image_dirs': [],
     'chat_image_recognition_switch': False,
     'chat_image_recognition_api': 0,
     'group_image_recognition_switch': False,
@@ -179,6 +181,7 @@ def _coerce_bool_fields(merged_config):
         'group_listen_only',
         'group_reply_at',
         'group_reply_at_msg',
+        'group_link_reply',
         'group_reply_quote',
         'group_welcome',
         'new_friend_switch',
@@ -224,7 +227,7 @@ def _coerce_bool_fields(merged_config):
 
 
 def _coerce_list_fields(merged_config):
-    list_fields = ['listen_list', 'special_session_name', 'group', 'new_friend_msg', 'new_friend_tags', 'scheduled_msg_list', 'random_msg_list', 'scheduled_moments_list', 'random_moments_list', 'custom_forward_list']
+    list_fields = ['ai_reply_image_dirs', 'listen_list', 'special_session_name', 'group', 'new_friend_msg', 'new_friend_tags', 'scheduled_msg_list', 'random_msg_list', 'scheduled_moments_list', 'random_moments_list', 'custom_forward_list']
     for field in list_fields:
         if field in merged_config and not isinstance(merged_config[field], list):
             if isinstance(merged_config[field], str):
