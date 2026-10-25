@@ -48,7 +48,8 @@
 <script src="leaflet/leaflet.js"></script>
 <script>
 // 数据由美食地图 MCP 写到 data.json；坐标是高德（GCJ-02），配高德底图不会偏移
-const map = L.map('map', { zoomControl: true, attributionControl: true });
+// 底库有上千家店，用 Canvas 画点，手机上不卡
+const map = L.map('map', { zoomControl: true, attributionControl: true, preferCanvas: true });
 L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
   subdomains: '1234', maxZoom: 18, attribution: '© 高德地图'
 }).addTo(map);

@@ -79,6 +79,20 @@ def _db():
             created_at INTEGER
         )
     """)
+    # 底库（refresh_base.py）用到的字段，旧库自动补上
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(places)")}
+    for col, decl in (
+        ("distance_m", "REAL"),            # 距云谷中心的直线距离（米）
+        ("open_time", "TEXT"),             # 营业时间
+        ("dianping_url", "TEXT"),
+        ("origin", "TEXT"),                # 底库扫描 / 群友分享
+        ("status", "TEXT DEFAULT '营业中'"),  # 营业中 / 疑似关店
+        ("miss_count", "INTEGER DEFAULT 0"),  # 底库更新时连续几次没搜到
+        ("refreshed_at", "INTEGER"),       # 最近一次从高德更新的时间
+    ):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE places ADD COLUMN {col} {decl}")
+    conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     return conn
 
 
@@ -86,7 +100,9 @@ def _export_map_data():
     """把收录的店写成网页地图用的 data.json；每次增删后调用。只导出展示需要的字段。"""
     fields = ("id", "name", "city", "district", "address", "lng", "lat", "category", "rating", "cost", "note", "added_by")
     with _db() as conn:
-        rows = conn.execute(f"SELECT {', '.join(fields)} FROM places ORDER BY created_at DESC").fetchall()
+        rows = conn.execute(
+            f"SELECT {', '.join(fields)} FROM places WHERE COALESCE(status, '') != '疑似关店' ORDER BY created_at DESC"
+        ).fetchall()
     os.makedirs(MAP_DATA_DIR, exist_ok=True)
     tmp = os.path.join(MAP_DATA_DIR, "data.json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
@@ -257,9 +273,9 @@ def save_place(poi_id: str, note: str = "", added_by: str = "", source: str = ""
             return "这家店已经在美食地图里了，已更新备注：\n" + _place_line(row)
         cur = conn.execute(
             """INSERT INTO places (poi_id, name, city, district, address, lng, lat, category, tel,
-                                   rating, cost, photo_url, note, added_by, source, created_at)
+                                   rating, cost, photo_url, note, added_by, source, origin, created_at)
                VALUES (:poi_id, :name, :city, :district, :address, :lng, :lat, :category, :tel,
-                       :rating, :cost, :photo_url, :note, :added_by, :source, :created_at)""",
+                       :rating, :cost, :photo_url, :note, :added_by, :source, '群友分享', :created_at)""",
             {**p, "note": note, "added_by": added_by, "source": source, "created_at": int(time.time())},
         )
         row = conn.execute("SELECT * FROM places WHERE id = ?", (cur.lastrowid,)).fetchone()

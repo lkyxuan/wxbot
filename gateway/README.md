@@ -23,6 +23,7 @@
 | `agents/*.md` | 各智能体的提示词 |
 | `mcp_servers/crypto_server.py` | 示例产品：加密货币行情（CoinGecko 公共接口） |
 | `mcp_servers/food_server.py` | 美食地图：识别分享卡片、高德查店、本地 SQLite 收录、附近查询、地图链接 |
+| `refresh_base.py` / `refresh_base.bat` | 美食底库：按圆心和半径从高德批量拉周边餐饮店，每周更新 |
 | `public/food-map/` | 美食网页地图页面（含 Leaflet 1.9.4，BSD-2 许可） |
 | `start_gateway.bat` | Windows 一键启动 |
 
@@ -57,6 +58,25 @@
    `"ai_reply_image_dirs": ["D:\\SiverWXbot_plus\\gateway\\data\\images"]`（换成实际路径）。机器人只会发送这个目录里的图片，没配置就不发图。
 
 6. 网页地图：浏览器打开 `http://127.0.0.1:8100/food-map/` 可以看到所有收录的店（底图用高德，可搜索）。这个路径不需要 Key，其余接口仍需要。要让群友手机能打开，需要把这个路径对外公开（例如 Tailscale Funnel 只公开 `/food-map`），再把公开地址填到 `mcp_servers.food.env.FOOD_MAP_URL`。
+
+### 美食底库（云谷周边）
+
+`refresh_base.py` 以云谷中心为圆心，用高德多边形搜索把半径内的餐饮店（高德分类 050000，含中餐、快餐、咖啡、茶饮、甜品）批量拉进 `food.db`，群友不用一家家分享也能查到。不经过大模型。
+
+```
+cd gateway
+set AMAP_KEY=你的 Key
+python refresh_base.py --dry-run     # 先试搜，看看有多少家、用了多少次高德
+python refresh_base.py               # 正式入库，默认半径 3000 米
+python refresh_base.py --center 120.02,30.28 --radius 5000   # 换圆心 / 半径
+```
+
+- 圆心默认用高德在杭州搜「云谷中心」的第一个结果，第一次运行后存进数据库，之后一直用同一个点；要换就传 `--center 经度,纬度` 或 `--center-name 地名`。
+- 已有的店只更新高德字段（评分、人均、营业时间、电话、照片），群友的备注和推荐人不动；群友分享的店在半径内也会被刷新。
+- 这次没搜到的底库店记一次缺席，连续两次标为「疑似关店」，不删除，网页地图上不再显示。没拉完的一次（配额用完、报错）不做这个判断。
+- 高德一次查询能翻到的条数有上限，脚本把范围切成 1 公里的格子，某格结果满 200 条就四分再搜。3 公里半径大约用几十到两百次搜索，`--max-calls`（默认 1500）防止意外用光每月 5000 次的配额。
+- 每周更新：把 `AMAP_KEY` 设成系统环境变量，然后用计划任务每周一凌晨 3 点运行 `refresh_base.bat`（日志写到 `data/refresh_base.log`）：
+  `schtasks /create /tn "云谷美食底库" /tr "D:\SiverWXbot_plus\gateway\refresh_base.bat" /sc weekly /d MON /st 03:00`（换成实际路径）
 
 识别方式：机器人读到的分享卡片只有卡片上的文字（标题、描述、来源），拿不到网址。AI 从标题里提取店名和城市，再用高德搜索得到地址、坐标、评分。内容里带高德店铺 ID（B0 开头）或高德链接时，会直接按 ID 精确查询。大众点评没有个人可用的开放接口，也不抓它的网页。
 
