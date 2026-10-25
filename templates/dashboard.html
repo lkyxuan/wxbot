@@ -918,6 +918,30 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
       <button type="button" class="btn-add" id="btn-add-group-item"><i class="bi bi-plus-circle"></i> 添加群组</button>
       <hr>
+      <label class="cfg-label">群聊发言人专属 Prompt</label>
+      <div class="cfg-hint" style="margin-bottom:10px;">
+        同一个群里给指定的人换 Prompt，优先级高于上面的群组 Prompt；没配的人仍用群组 Prompt。<br>
+        发言人填群里显示的名字（好友显示备注，非好友显示群昵称）。对方改名后需要在这里同步修改。
+      </div>
+      <div id="group_sender_prompt_container">
+        {% for g, senders in config.group_sender_prompt_map.items() %}
+        {% for s, pname in senders.items() %}
+        <div class="list-item group-sender-prompt-item" style="flex-wrap:wrap;gap:6px;">
+          <input type="text" class="form-control gsp-group" value="{{ g }}" placeholder="群聊名称">
+          <input type="text" class="form-control gsp-sender" value="{{ s }}" placeholder="发言人显示名">
+          <select class="form-select group-sender-prompt-select" style="width:145px;flex-shrink:0;" title="该发言人使用的Prompt">
+            <option value="">默认（全局）</option>
+            {% for p in prompts %}
+            <option value="{{ p.name }}" {% if pname == p.name %}selected{% endif %}>{{ p.name }}</option>
+            {% endfor %}
+          </select>
+          <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+        </div>
+        {% endfor %}
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" id="btn-add-group-sender-prompt"><i class="bi bi-plus-circle"></i> 添加发言人</button>
+      <hr>
       <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:6px;">
         <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
           <input class="form-check-input" type="checkbox" id="group_image_recognition_switch"
@@ -1703,6 +1727,11 @@ html.icons-pref-local [class*=" bi-"]::before {
         <label for="clean_ai_reply_switch">屏蔽模型思考过程</label>
         <span class="switch-desc">自动移除模型返回的思考标签，避免将推理过程发送给用户</span>
       </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="api_chat_meta_headers" {% if config.get('api_chat_meta_headers', False) %}checked{% endif %}>
+        <label for="api_chat_meta_headers">请求头附带会话信息</label>
+        <span class="switch-desc">调用 OpenAI 兼容接口时带上 X-WX-Chat / X-WX-Chat-Type / X-WX-Sender 请求头（UTF-8 百分号编码），供自建 AI 网关区分群和发言人；用第三方接口时建议关闭</span>
+      </div>
     </div>
   </div>
 
@@ -1847,6 +1876,26 @@ html.icons-pref-local [class*=" bi-"]::before {
           <input type="number" class="form-control" id="memory_context_count" min="50" max="5000"
             value="{{ config.get('memory_context_count', 1000) }}" placeholder="1000">
           <div class="cfg-hint">AI 回复时从记忆中读取最近 N 条作为上下文传入</div>
+        </div>
+      </div>
+      <hr>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="group_context_by_sender" {% if config.get('group_context_by_sender', False) %}checked{% endif %}>
+        <label class="form-check-label" for="group_context_by_sender">群聊精简上下文</label>
+        <span class="switch-desc">开启后群聊不再带入上面的 N 条，改为"群里最近几条 + 当前发言人更早的发言及机器人对他的回复"，省 token 且更聚焦这个人</span>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label class="cfg-label" for="group_context_recent_count">群里最近条数（0 ~ 500）</label>
+          <input type="number" class="form-control" id="group_context_recent_count" min="0" max="500"
+            value="{{ config.get('group_context_recent_count', 15) }}" placeholder="15">
+          <div class="cfg-hint">群里正在聊的最近几条，所有人的发言都算</div>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="cfg-label" for="group_context_sender_count">发言人个人记录条数（0 ~ 500）</label>
+          <input type="number" class="form-control" id="group_context_sender_count" min="0" max="500"
+            value="{{ config.get('group_context_sender_count', 30) }}" placeholder="30">
+          <div class="cfg-hint">在上面之外，再带入这个人更早的发言和机器人回他的话（从存储的记忆里找）</div>
         </div>
       </div>
     </div>

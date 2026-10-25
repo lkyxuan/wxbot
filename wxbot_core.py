@@ -41,6 +41,7 @@ import queue
 import traceback
 import copy
 from datetime import datetime, timedelta
+from urllib.parse import quote as _url_quote
 
 # ============================================================
 # 第三方库导入
@@ -399,6 +400,38 @@ def extract_ai_reply_images(text, allowed_dirs):
     return cleaned, images
 
 
+def select_group_context(history, sender, recent_count, sender_count):
+    """群聊精简上下文：群里最近 recent_count 条 + 更早记录中与 sender 相关的最近 sender_count 条。
+
+    "与 sender 相关"指 sender 自己的发言，以及机器人回他的话。机器人消息（attr == 'self'）
+    没记录回复对象，按两条规则归属：内容以 "@sender" 开头，或紧挨着的上一条非机器人消息
+    就是 sender 发的。返回值保持原有时间顺序。
+    """
+    history = list(history or [])
+    recent_count = max(0, int(recent_count))
+    sender_count = max(0, int(sender_count))
+    split = max(0, len(history) - recent_count)
+    older, recent = history[:split], history[split:]
+
+    personal = []
+    last_friend_sender = None
+    for h in older:
+        h_sender = h.get('sender', '')
+        if h.get('attr') == 'self':
+            content = str(h.get('content', ''))
+            if sender and (content.startswith('@' + sender) or last_friend_sender == sender):
+                personal.append(h)
+        else:
+            last_friend_sender = h_sender
+            if sender and h_sender == sender:
+                personal.append(h)
+    if sender_count:
+        personal = personal[-sender_count:]
+    else:
+        personal = []
+    return personal + recent
+
+
 def clean_ai_reply_text(text):
     """清理模型回复中的思考标签，避免把推理过程发送给用户。"""
     if text is None:
@@ -576,6 +609,7 @@ class WXBotConfig:
         self.chat_api_map     = {}          # 私聊白名单用户 -> API 接口索引
         self.chat_max_round_map = {}        # 私聊白名单用户 -> 专属回复轮数上限
         self.group_prompt_map = {}          # 群组名称 -> prompt 名称
+        self.group_sender_prompt_map = {}   # 群组名称 -> {群内显示名 -> prompt 名称}
 
         # ---------- 定时消息配置 ----------
         self.scheduled_msg_switch = False    # 定时消息总开关
@@ -602,12 +636,16 @@ class WXBotConfig:
         self.memory_switch        = True      # 记忆开关（默认开启）
         self.memory_max_count     = 3000     # 单窗口最多存储条数（上限 5000）
         self.memory_context_count = 1000     # AI 请求时带入条数
+        self.group_context_by_sender    = False  # 群聊精简上下文：最近群聊 + 发言人个人记录
+        self.group_context_recent_count = 15     # 群里最近带入条数
+        self.group_context_sender_count = 30     # 发言人个人记录带入条数
 
         # ---------- 发送延迟配置 ----------
         self.reply_delay_switch = True  # 模拟人工操作延迟开关（默认开启）
         self.reply_delay_min    = 1     # 最小延迟秒数
         self.reply_delay_max    = 5     # 最大延迟秒数
         self.clean_ai_reply_switch = True  # AI 回复清洗开关
+        self.api_chat_meta_headers = False  # 调用 OpenAI 兼容接口时附带群名/发言人请求头
         self.ai_reply_image_dirs = []      # 群聊 AI 回复里允许作为图片发送的本地目录（见 extract_ai_reply_images）
 
         # 初始化时自动加载配置并同步到属性
@@ -943,12 +981,16 @@ class WXBotConfig:
         self.memory_switch        = self.config.get('memory_switch', True)
         self.memory_max_count     = self._coerce_int_range(self.config.get('memory_max_count'), 3000, 1, 99999)
         self.memory_context_count = self._coerce_int_range(self.config.get('memory_context_count'), 1000, 1, 99999)
+        self.group_context_by_sender    = bool(self.config.get('group_context_by_sender', False))
+        self.group_context_recent_count = self._coerce_int_range(self.config.get('group_context_recent_count'), 15, 0, 500)
+        self.group_context_sender_count = self._coerce_int_range(self.config.get('group_context_sender_count'), 30, 0, 500)
 
         # --- 发送延迟配置（缺键已由上面的 apply_defaults 统一补齐）---
         self.reply_delay_switch = bool(self.config.get('reply_delay_switch', True))
         self.reply_delay_min    = self._coerce_int_range(self.config.get('reply_delay_min'), 1, 1, 3600)
         self.reply_delay_max    = self._coerce_int_range(self.config.get('reply_delay_max'), 5, 1, 3600)
         self.clean_ai_reply_switch = bool(self.config.get('clean_ai_reply_switch', True))
+        self.api_chat_meta_headers = bool(self.config.get('api_chat_meta_headers', False))
         self.ai_reply_image_dirs = [str(d) for d in (self.config.get('ai_reply_image_dirs') or []) if str(d).strip()]
 
         # --- 图片识别配置 ---
@@ -979,6 +1021,7 @@ class WXBotConfig:
             self.config.get('chat_max_round_map', {})
         )
         self.group_prompt_map = self.config.get('group_prompt_map', {})
+        self.group_sender_prompt_map = self.config.get('group_sender_prompt_map', {})
         self.init_prompt_dir()
 
         # --- 接口调用失败时的固定回复 ---
@@ -1503,8 +1546,20 @@ class OpenAIAPI:
             messages.append({"role": role, "content": content})
         return messages
 
+    @staticmethod
+    def _chat_meta_headers(chat_meta):
+        """把会话元信息转成 X-WX-* 请求头；中文按 UTF-8 百分号编码（HTTP 头只能放 ASCII）。"""
+        if not chat_meta:
+            return None
+        headers = {}
+        for key, header in (('chat', 'X-WX-Chat'), ('chat_type', 'X-WX-Chat-Type'), ('sender', 'X-WX-Sender')):
+            value = str(chat_meta.get(key) or '')
+            if value:
+                headers[header] = _url_quote(value, safe="")
+        return headers or None
+
     def chat(self, message, model=None, stream=False, prompt=None, history=None,
-             image_path: str = "", image_url: str = ""):
+             image_path: str = "", image_url: str = "", chat_meta=None):
         """
         调用 OpenAI 兼容接口获取 AI 回复。
 
@@ -1515,6 +1570,7 @@ class OpenAIAPI:
         :param history: 历史消息列表（MemoryManager.get_messages 返回值）
         :param image_path: 本地图片路径，优先于 image_url
         :param image_url:  图片 URL，image_path 为空时使用
+        :param chat_meta:  会话元信息 {chat, chat_type, sender}，以 X-WX-* 请求头发出，供自建网关使用
         :return:        AI 回复的文本字符串
         """
         if model is None:
@@ -1539,13 +1595,14 @@ class OpenAIAPI:
                 model=model,
                 messages=messages,
                 stream=stream,
+                extra_headers=self._chat_meta_headers(chat_meta),
             )
         except Exception as e:
             error_msg = str(e)
             error_type = type(e).__name__
             log(level="WARN", message=f"Chat Completions API 调用失败 [{error_type}]: {error_msg}")
             log(level="INFO", message="尝试备用方案（Responses API）")
-            return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url)
+            return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
 
         try:
             if stream:
@@ -1582,7 +1639,7 @@ class OpenAIAPI:
                     return result
                 else:
                     log(level="WARN", message=f"流式响应为空（收到 {chunk_count} 个块），尝试备用方案")
-                    return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url)
+                    return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
             else:
                 # 非流式模式：直接取 choices[0] 的消息内容
                 if response.choices and len(response.choices) > 0:
@@ -1595,16 +1652,17 @@ class OpenAIAPI:
                         return output
                     else:
                         log(level="WARN", message="非流式响应内容为空，尝试备用方案")
-                        return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url)
+                        return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
                 else:
                     log(level="WARN", message="响应中没有 choices，尝试备用方案")
-                    return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url)
+                    return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
         except Exception as e:
             error_type = type(e).__name__
             log(level="WARN", message=f"解析 API 响应出错 [{error_type}]: {str(e)}，尝试备用方案")
-            return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url)
+            return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
 
-    def _try_responses_api(self, message, model, stream, prompt, history=None, image_path="", image_url=""):
+    def _try_responses_api(self, message, model, stream, prompt, history=None, image_path="", image_url="",
+                           chat_meta=None):
         """
         备用方案：使用 Responses API 调用。
         当 Chat Completions API 调用失败时自动降级到此方案。
@@ -1635,6 +1693,7 @@ class OpenAIAPI:
             response = self.client.responses.create(
                 model=model,
                 input=input_items,
+                extra_headers=self._chat_meta_headers(chat_meta),
             )
 
             # 遍历 output 提取 message 条目中的文本（兼容 reasoning 等其它条目类型）
@@ -2513,11 +2572,19 @@ class WXBot:
                 ):
                     attempts.append((fallback_index, None))
 
+        # 会话元信息（群名/发言人）只在开关打开时、且只交给 OpenAI 兼容接口
+        chat_meta = kwargs.pop('chat_meta', None)
+        if not getattr(self.config, 'api_chat_meta_headers', False):
+            chat_meta = None
+
         for attempt_number, (index, current_api) in enumerate(attempts):
             try:
                 if current_api is None:
                     current_api = self._get_api_instance_by_index(index)
-                reply = current_api.chat(message, **kwargs)
+                call_kwargs = kwargs
+                if chat_meta and isinstance(current_api, OpenAIAPI):
+                    call_kwargs = dict(kwargs, chat_meta=chat_meta)
+                reply = current_api.chat(message, **call_kwargs)
                 if reply and reply != API_ERROR_REPLY:
                     if attempt_number > 0:
                         log(message=f"备用接口 {index + 1} 调用成功")
@@ -3827,11 +3894,20 @@ class WXBot:
                 try:
                     history = []
                     if self.config.memory_switch and self.memory_manager:
-                        history = self.memory_manager.get_messages(
-                            chat.who, self.config.memory_context_count
-                        )
+                        if self.config.group_context_by_sender:
+                            # 精简上下文：群里最近 N 条 + 该发言人（及机器人回他）的更早 M 条
+                            history = select_group_context(
+                                self.memory_manager.get_messages(chat.who, self.config.memory_max_count),
+                                message.sender,
+                                self.config.group_context_recent_count,
+                                self.config.group_context_sender_count,
+                            )
+                        else:
+                            history = self.memory_manager.get_messages(
+                                chat.who, self.config.memory_context_count
+                            )
                     # 构建有效 prompt（拆分开关开启时注入格式要求）
-                    _base_group_prompt = self._get_group_prompt(chat.who)
+                    _base_group_prompt = self._get_group_prompt(chat.who, message.sender)
                     if self.config.group_split_reply_switch:
                         _effective_group_prompt = self._build_split_prompt(
                             _base_group_prompt,
@@ -3840,6 +3916,7 @@ class WXBot:
                         )
                     else:
                         _effective_group_prompt = _base_group_prompt
+                    _chat_meta = {'chat': chat.who, 'chat_type': 'group', 'sender': message.sender}
                     if self.config.group_image_recognition_switch:
                         if getattr(message, 'merged_image', ''):
                             # 合并回复带图片：正文用合并后的文字（已去掉 @），图片取最后一张
@@ -3848,6 +3925,7 @@ class WXBot:
                                 rec_index,
                                 f"{message.sender}: {content_without_at}",
                                 prompt=_effective_group_prompt,
+                                chat_meta=_chat_meta,
                                 history=history,
                                 image_path=message.merged_image
                             )
@@ -3858,6 +3936,7 @@ class WXBot:
                                 rec_index,
                                 f"{message.sender}: [这是 {message.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
                                 prompt=_effective_group_prompt,
+                                chat_meta=_chat_meta,
                                 history=history,
                                 image_path=message.content
                             )
@@ -3869,6 +3948,7 @@ class WXBot:
                                 rec_index,
                                 f"{message.sender}: {text_part.strip()}" if text_part.strip() else f"{message.sender}: [这是 {message.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
                                 prompt=_effective_group_prompt,
+                                chat_meta=_chat_meta,
                                 history=history,
                                 image_path=img_path.strip()
                             )
@@ -3879,6 +3959,7 @@ class WXBot:
                                 group_api_index,
                                 content_with_sender,
                                 prompt=_effective_group_prompt,
+                                chat_meta=_chat_meta,
                                 history=history,
                             )
                     else:
@@ -3890,6 +3971,7 @@ class WXBot:
                             group_api_index,
                             content_with_sender,
                             prompt=_effective_group_prompt,
+                            chat_meta=_chat_meta,
                             history=history,
                         )
                 except Exception as e:
@@ -4013,9 +4095,16 @@ class WXBot:
             name = self.config.default_prompt
         return self.config.get_prompt_content(name)
 
-    def _get_group_prompt(self, group_name):
-        """获取群组对应的 prompt 内容（查 group_prompt_map，未配置则用 default_prompt）"""
-        name = self.config.group_prompt_map.get(group_name) or self.config.default_prompt
+    def _get_group_prompt(self, group_name, sender=None):
+        """获取群组对应的 prompt 内容。
+
+        优先级：group_sender_prompt_map[群][发言人] > group_prompt_map[群] > default_prompt。
+        发言人按群里显示的名字匹配（好友备注或群昵称），wxautox4 拿不到微信 ID。
+        """
+        sender_map = (self.config.group_sender_prompt_map or {}).get(group_name) or {}
+        name = (sender and sender_map.get(sender)) \
+            or self.config.group_prompt_map.get(group_name) \
+            or self.config.default_prompt
         return self.config.get_prompt_content(name)
 
     def _send_group_reply(self, chat, message, content, at_sender=False, quote=False):
@@ -4275,6 +4364,7 @@ class WXBot:
                     )
                 else:
                     _effective_prompt = _base_prompt
+                _chat_meta = {'chat': chat.who, 'chat_type': 'friend', 'sender': message.sender}
                 if self.config.chat_image_recognition_switch:
                     if getattr(message, 'merged_image', ''):
                         # 合并回复带图片：正文是合并后的文字，图片取最后一张
@@ -4283,6 +4373,7 @@ class WXBot:
                             rec_index,
                             message.content,
                             prompt=_effective_prompt,
+                            chat_meta=_chat_meta,
                             history=history,
                             image_path=message.merged_image
                         )
@@ -4293,6 +4384,7 @@ class WXBot:
                             rec_index,
                             "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
                             prompt=_effective_prompt,
+                            chat_meta=_chat_meta,
                             history=history,
                             image_path=message.content
                         )
@@ -4304,6 +4396,7 @@ class WXBot:
                             rec_index,
                             text_part.strip() or "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
                             prompt=_effective_prompt,
+                            chat_meta=_chat_meta,
                             history=history,
                             image_path=img_path.strip()
                         )
@@ -4314,6 +4407,7 @@ class WXBot:
                             chat_api_index,
                             message.content,
                             prompt=_effective_prompt,
+                            chat_meta=_chat_meta,
                             history=history,
                         )
                 else:
@@ -4325,6 +4419,7 @@ class WXBot:
                         chat_api_index,
                         message.content,
                         prompt=_effective_prompt,
+                        chat_meta=_chat_meta,
                         history=history,
                     )
         except Exception as e:

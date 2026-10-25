@@ -6,7 +6,7 @@
   - web_server.main() 建文件时的 default_config（96 个键）
   - wxbot_core.create_new_config_file() 的 base_config（96 个键，与上一处是两份重复拷贝）
   - web_server.dashboard() 给老配置补键的 76 个 setdefault
-现在三者合并为本文件的 DEFAULT_CONFIG（100 个键），老配置补键由 apply_defaults() 统一完成。
+现在三者合并为本文件的 DEFAULT_CONFIG（105 个键），老配置补键由 apply_defaults() 统一完成。
 
 迁移原则
 --------
@@ -77,6 +77,7 @@ DEFAULT_CONFIG = {
     'chat_api_map': {},
     'chat_max_round_map': {},
     'group_prompt_map': {},
+    'group_sender_prompt_map': {},
     'scheduled_msg_switch': False,
     'scheduled_msg_list': [],
     'random_msg_switch': False,
@@ -94,10 +95,14 @@ DEFAULT_CONFIG = {
     'memory_switch': True,
     'memory_max_count': 3000,
     'memory_context_count': 1000,
+    'group_context_by_sender': False,
+    'group_context_recent_count': 15,
+    'group_context_sender_count': 30,
     'reply_delay_switch': True,
     'reply_delay_min': 1,
     'reply_delay_max': 5,
     'clean_ai_reply_switch': True,
+    'api_chat_meta_headers': False,
     'ai_reply_image_dirs': [],
     'chat_image_recognition_switch': False,
     'chat_image_recognition_api': 0,
@@ -197,8 +202,10 @@ def _coerce_bool_fields(merged_config):
         'random_moments_switch',            # 随机定时朋友圈开关
         'everyday_start_stop_bot_switch',   # 新增
         'memory_switch',                    # 记忆开关
+        'group_context_by_sender',          # 群聊精简上下文开关
         'reply_delay_switch',               # 发送延迟开关
         'clean_ai_reply_switch',            # AI 回复清洗开关
+        'api_chat_meta_headers',            # 接口请求头附带群名/发言人
         'chat_image_recognition_switch',    # 私聊图片识别开关
         'group_image_recognition_switch',   # 群组图片识别开关
         'custom_forward_switch',            # 自定义转发总开关
@@ -258,6 +265,8 @@ def _coerce_int_range_fields(merged_config):
         'chat_max_round_reset_days': (0, 365, 0),
         'merge_reply_window': (1, 300, 5),
         'merge_reply_max_count': (1, 100, 10),
+        'group_context_recent_count': (0, 500, 15),
+        'group_context_sender_count': (0, 500, 30),
     }
     for field, (lo, hi, default) in int_range_fields.items():
         if field in merged_config:
@@ -401,6 +410,25 @@ def _coerce_dict_fields(merged_config):
             merged_config['group_prompt_map'] = clean
         else:
             merged_config['group_prompt_map'] = {}
+
+    # group_sender_prompt_map: {群名: {群内显示名: prompt 文件名}}，空键/空值丢弃
+    if 'group_sender_prompt_map' in merged_config:
+        gspm = merged_config['group_sender_prompt_map']
+        clean = {}
+        if isinstance(gspm, dict):
+            for g, senders in gspm.items():
+                g = str(g).strip()
+                if not g or not isinstance(senders, dict):
+                    continue
+                inner = {}
+                for k, v in senders.items():
+                    k = str(k).strip()
+                    v = str(v).strip()
+                    if k and v:
+                        inner[k] = v
+                if inner:
+                    clean[g] = inner
+        merged_config['group_sender_prompt_map'] = clean
 
 def normalize(config):
     """统一规范化：清掉旧 API 字段 + 6 类类型校验。

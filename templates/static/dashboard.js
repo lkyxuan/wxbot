@@ -562,6 +562,18 @@ $(function(){
       '</div>'
     );
   });
+  $('#btn-add-group-sender-prompt').click(function(){
+    $('#group_sender_prompt_container').append(
+      '<div class="list-item group-sender-prompt-item" style="flex-wrap:wrap;gap:6px;">'+
+        '<input type="text" class="form-control gsp-group" placeholder="群聊名称">'+
+        '<input type="text" class="form-control gsp-sender" placeholder="发言人显示名">'+
+        '<select class="form-select group-sender-prompt-select" style="width:145px;flex-shrink:0;" title="该发言人使用的Prompt">'+
+          buildPromptOpts('')+
+        '</select>'+
+        '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
+      '</div>'
+    );
+  });
 
   // ===== Sidebar Tab Switch =====
   function isMobileLayout(){
@@ -737,7 +749,7 @@ $(function(){
   refreshApiReferenceDropdowns();
   refreshApiFallbackOptions();
   function refreshAllPromptDropdowns() {
-    ['#default_prompt_select', '.chat-prompt-select', '.group-prompt-select'].forEach(function(sel){
+    ['#default_prompt_select', '.chat-prompt-select', '.group-prompt-select', '.group-sender-prompt-select'].forEach(function(sel){
       $(sel).each(function(){
         var cur = $(this).val() || '';
         $(this).html(sel==='#default_prompt_select'
@@ -1440,7 +1452,7 @@ $(function(){
       admin:$('#admin').val(),
       group_welcome_msg:$('#group_welcome_msg').summernote('code'),
       default_prompt:$('#default_prompt_select').val()||'默认',
-      listen_list:[], special_session_name:[], group:[], group_api_map:{}, group_prompt_map:{}, new_friend_msg:[],
+      listen_list:[], special_session_name:[], group:[], group_api_map:{}, group_prompt_map:{}, group_sender_prompt_map:{}, new_friend_msg:[],
       chat_prompt_map:{}, chat_api_map:{}, chat_max_round_map:{},
       group_welcome_random:parseFloat($('#group_welcome_random').val()),
       keyword_dict:{},
@@ -1461,6 +1473,9 @@ $(function(){
       memory_switch:$('#memory_switch').is(':checked'),
       memory_max_count:parseInt($('#memory_max_count').val())||3000,
       memory_context_count:parseInt($('#memory_context_count').val())||1000,
+      group_context_by_sender:$('#group_context_by_sender').is(':checked'),
+      group_context_recent_count:(function(v){return isNaN(v)?15:Math.max(0,Math.min(500,v));})(parseInt($('#group_context_recent_count').val())),
+      group_context_sender_count:(function(v){return isNaN(v)?30:Math.max(0,Math.min(500,v));})(parseInt($('#group_context_sender_count').val())),
       reply_delay_switch:$('#reply_delay_switch').is(':checked'),
       reply_delay_min:Math.max(1,parseInt($('#reply_delay_min').val())||1),
       reply_delay_max:Math.max(1,parseInt($('#reply_delay_max').val())||5),
@@ -1471,6 +1486,7 @@ $(function(){
       api_error_reply:$('#api_error_reply').val().trim()||'在忙，我稍后回复您',
       api_error_reply_once:$('#api_error_reply_once').is(':checked'),
       clean_ai_reply_switch:$('#clean_ai_reply_switch').is(':checked'),
+      api_chat_meta_headers:$('#api_chat_meta_headers').is(':checked'),
       chat_max_round_switch:$('#chat_max_round_switch').is(':checked'),
       chat_max_round_default:Math.max(1,Math.min(99999,parseInt($('#chat_max_round_default').val())||99)),
       chat_max_round_reset_days:Math.max(0,Math.min(365,parseInt($('#chat_max_round_reset_days').val())||0)),
@@ -1521,6 +1537,14 @@ $(function(){
       if(!isNaN(idx) && idx>=0){ configData.group_api_map[name]=idx; }
       var gpv=$(this).find('.group-prompt-select').val();
       if(gpv){ configData.group_prompt_map[name]=gpv; }
+    });
+    // --- ⑤-b 群聊发言人专属 Prompt：{群名: {发言人: prompt}} ---
+    $('#group_sender_prompt_container .group-sender-prompt-item').each(function(){
+      var g=$(this).find('.gsp-group').val().trim();
+      var s=$(this).find('.gsp-sender').val().trim();
+      var p=$(this).find('.group-sender-prompt-select').val();
+      if(!g || !s || !p) return;
+      (configData.group_sender_prompt_map[g] = configData.group_sender_prompt_map[g] || {})[s]=p;
     });
     // --- ⑥ 新好友招呼消息 + 关键词字典 ---
     $('[name="new_friend_msg"]').each(function(){ if($(this).val()) configData.new_friend_msg.push($(this).val()); });
