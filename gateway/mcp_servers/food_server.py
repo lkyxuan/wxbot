@@ -292,7 +292,7 @@ def search_places(keyword: str = "", city: str = "", limit: int = 10) -> str:
     city: 城市，可选
     limit: 最多返回几家，默认 10
     """
-    sql, args = "SELECT * FROM places WHERE 1=1", []
+    sql, args = "SELECT * FROM places WHERE COALESCE(status, '') != '疑似关店'", []
     if keyword:
         sql += " AND (name LIKE ? OR category LIKE ? OR address LIKE ? OR district LIKE ? OR note LIKE ?)"
         args += [f"%{keyword}%"] * 5
@@ -321,7 +321,9 @@ def nearby_places(location: str, radius_km: float = 3, limit: int = 10) -> str:
         return f"高德上找不到这个地点：{location}"
     lng0, lat0 = center
     with _db() as conn:
-        rows = conn.execute("SELECT * FROM places WHERE lng IS NOT NULL AND lat IS NOT NULL").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM places WHERE lng IS NOT NULL AND lat IS NOT NULL AND COALESCE(status, '') != '疑似关店'"
+        ).fetchall()
 
     def dist_km(r):
         # 球面距离（haversine），城市范围内足够准确
