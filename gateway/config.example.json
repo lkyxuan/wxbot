@@ -53,7 +53,9 @@
         "silent_on_labels": [
           "review"
         ],
-        "cooldown_seconds": 0
+        "cooldown_seconds": 0,
+        "chat_when": "群友在闲聊（不是在问吃的），聊的话题你能自然、轻松地接一句，比如吃喝、天气、周末去哪、群里的趣事；单纯打招呼、表情、和你无关的私事不算",
+        "chat_cooldown_seconds": 60
       }
     }
   }

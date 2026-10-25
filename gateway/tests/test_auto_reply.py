@@ -182,3 +182,43 @@ def test_request_meta_headers():
         assert gateway.request_meta() == {"chat": "美食群", "sender": "小红", "mentioned": False}
     with app.test_request_context():
         assert gateway.request_meta()["mentioned"] is None
+
+
+def chat_cfg(**over):
+    cfg = json.loads(json.dumps(AGENT))
+    cfg["auto_reply"].update({"cooldown_seconds": 0, "chat_when": "大家在闲聊、你能自然接一句", "chat_cooldown_seconds": 60}, **over)
+    return cfg
+
+
+def test_chat_off_without_chat_when():
+    ar, client = setup(judge=[{"reply": False, "chat": True, "labels": {}}])
+    assert ar.respond("food", MSGS, META) == gateway.NO_REPLY
+    assert '"chat"' not in client.calls[0]["messages"][0]["content"]
+    assert client.agent_calls() == []
+
+
+def test_chat_chimes_in_with_its_own_cooldown():
+    ar, client = setup(judge=[{"reply": False, "chat": True}, {"reply": False, "chat": True}],
+                       agent=["哈哈是挺热"], agent_cfg=chat_cfg())
+    assert ar.respond("food", MSGS, META) == "哈哈是挺热"
+    assert "闲聊" in client.agent_calls()[0]["messages"][0]["content"]
+    # 一分钟内第二句闲聊不插
+    assert ar.respond("food", MSGS, META) == gateway.NO_REPLY
+    assert len(client.agent_calls()) == 1
+    assert '"chat": false' in client.calls[0]["messages"][0]["content"]
+
+
+def test_questions_not_blocked_by_chat_cooldown():
+    ar, client = setup(judge=[{"reply": False, "chat": True}, {"reply": True}, {"reply": True}],
+                       agent=["插一句", "吃面", "吃饭"], agent_cfg=chat_cfg())
+    assert ar.respond("food", MSGS, META) == "插一句"
+    # cooldown_seconds=0：问吃的每句都回，不受闲聊冷却影响
+    assert ar.respond("food", MSGS, META) == "吃面"
+    assert ar.respond("food", MSGS, META) == "吃饭"
+
+
+def test_chat_no_reply_releases_chat_cooldown():
+    ar, client = setup(judge=[{"reply": False, "chat": True}, {"reply": False, "chat": True}],
+                       agent=[gateway.NO_REPLY, "第二次"], agent_cfg=chat_cfg())
+    assert ar.respond("food", MSGS, META) == gateway.NO_REPLY
+    assert ar.respond("food", MSGS, META) == "第二次"

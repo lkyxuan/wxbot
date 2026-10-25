@@ -300,21 +300,27 @@ class AutoReply:
         return lines[-limit:] if limit > 0 else lines
 
     def judge(self, agent_name, agent, messages):
-        """返回 {"reply": bool, "labels": {标签: bool}}；出错时按不接话处理。"""
+        """返回 {"reply": bool, "chat": bool, "labels": {标签: bool}}；出错时按不接话处理。
+        chat 只在配置了 chat_when 时判断：闲聊里值得插一句（冷却另算，见 respond）。"""
         ar = agent["auto_reply"]
         labels = ar.get("labels", {})
         lines = self._transcript(messages, int(ar.get("context_messages", 8)))
         if not lines:
-            return {"reply": False, "labels": {}}
+            return {"reply": False, "chat": False, "labels": {}}
         label_rules = "\n".join(f"- {name}：{desc}" for name, desc in labels.items()) or "（无）"
         label_example = ", ".join(f'"{name}": false' for name in labels)
+        chat_when = ar.get("chat_when") or ""
+        chat_rule = (f"如果不需要接话，再判断 chat：这是不是一段值得插一句的闲聊（{chat_when}）。"
+                     "chat 只表示「可以插一句」，不是每句闲聊都要接。\n\n") if chat_when else ""
+        chat_example = '"chat": false, ' if chat_when else ""
         system = (
             "你在帮一个微信群里的 AI 助手判断：群里最新这条消息（标了【最新】的那条），助手要不要主动接话。"
             "这条消息没有 @ 助手，大多数闲聊都不该接，拿不准时不接。\n\n"
-            f"需要接话的情况：\n{ar.get('reply_when') or '有人明显在向助手提问或求助'}\n\n"
+            f"需要接话的情况（reply）：\n{ar.get('reply_when') or '有人明显在向助手提问或求助'}\n\n"
+            f"{chat_rule}"
             f"另外判断这些标签（只看【最新】那条）：\n{label_rules}\n\n"
             "只输出一个 JSON 对象，不要别的文字，格式：\n"
-            f'{{"reply": false, "labels": {{{label_example}}}}}'
+            f'{{"reply": false, {chat_example}"labels": {{{label_example}}}}}'
         )
         lines[-1] = "【最新】" + lines[-1]
         user = ("最近的群聊（每行一条消息，格式「昵称: 内容」，一条消息里的换行写成「 / 」）：\n"
@@ -332,10 +338,11 @@ class AutoReply:
             data = parse_judge_json(resp.choices[0].message.content)
         except Exception as e:
             log.warning("[%s] 判断接话失败，按不接话处理：%s", agent_name, e)
-            return {"reply": False, "labels": {}}
+            return {"reply": False, "chat": False, "labels": {}}
         raw_labels = data.get("labels") if isinstance(data.get("labels"), dict) else {}
         return {
             "reply": data.get("reply") is True,
+            "chat": bool(chat_when) and data.get("chat") is True,
             "labels": {name: raw_labels.get(name) is True for name in labels},
         }
 
@@ -382,6 +389,24 @@ class AutoReply:
                 raise
             if not content or content.strip() == NO_REPLY:
                 self._release_cooldown(cooldown_key)
+            return content
+
+        # 闲聊插一句：单独的冷却（chat_cooldown_seconds，默认 60 秒），和上面的接话冷却互不影响
+        chat_key = f"{cooldown_key}#chat"
+        if not verdict["reply"] and verdict.get("chat") \
+                and self._claim_cooldown(chat_key, float(ar.get("chat_cooldown_seconds", 60))):
+            log.info("[%s] 判断：闲聊插一句，标签 %s", agent_name, hit)
+            note = ("这条消息没有 @ 你，是群友在闲聊，你主动插一句：像群友一样简短自然，一两句就够，"
+                    "不要推销功能，也不要把话题硬拉回你的专长。")
+            if hit:
+                note += f"判断阶段命中的标签：{'、'.join(hit)}。"
+            try:
+                content = self.runner.run(agent_name, messages, [base_note, note])
+            except Exception:
+                self._release_cooldown(chat_key)
+                raise
+            if not content or content.strip() == NO_REPLY:
+                self._release_cooldown(chat_key)
             return content
 
         if "*" in silent_on or any(name in silent_on for name in hit):
