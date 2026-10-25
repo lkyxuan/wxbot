@@ -1873,6 +1873,26 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="cfg-hint">AI 回复时从记忆中读取最近 N 条作为上下文传入</div>
         </div>
       </div>
+      <hr>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="group_context_by_sender" {% if config.get('group_context_by_sender', False) %}checked{% endif %}>
+        <label class="form-check-label" for="group_context_by_sender">群聊精简上下文</label>
+        <span class="switch-desc">开启后群聊不再带入上面的 N 条，改为"群里最近几条 + 当前发言人更早的发言及机器人对他的回复"，省 token 且更聚焦这个人</span>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label class="cfg-label" for="group_context_recent_count">群里最近条数（0 ~ 500）</label>
+          <input type="number" class="form-control" id="group_context_recent_count" min="0" max="500"
+            value="{{ config.get('group_context_recent_count', 15) }}" placeholder="15">
+          <div class="cfg-hint">群里正在聊的最近几条，所有人的发言都算</div>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="cfg-label" for="group_context_sender_count">发言人个人记录条数（0 ~ 500）</label>
+          <input type="number" class="form-control" id="group_context_sender_count" min="0" max="500"
+            value="{{ config.get('group_context_sender_count', 30) }}" placeholder="30">
+          <div class="cfg-hint">在上面之外，再带入这个人更早的发言和机器人回他的话（从存储的记忆里找）</div>
+        </div>
+      </div>
     </div>
     <!-- 记忆查看卡片 -->
     <div class="cfg-card">

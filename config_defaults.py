@@ -94,6 +94,9 @@ DEFAULT_CONFIG = {
     'memory_switch': True,
     'memory_max_count': 3000,
     'memory_context_count': 1000,
+    'group_context_by_sender': False,
+    'group_context_recent_count': 15,
+    'group_context_sender_count': 30,
     'reply_delay_switch': True,
     'reply_delay_min': 1,
     'reply_delay_max': 5,
@@ -196,6 +199,7 @@ def _coerce_bool_fields(merged_config):
         'random_moments_switch',            # 随机定时朋友圈开关
         'everyday_start_stop_bot_switch',   # 新增
         'memory_switch',                    # 记忆开关
+        'group_context_by_sender',          # 群聊精简上下文开关
         'reply_delay_switch',               # 发送延迟开关
         'clean_ai_reply_switch',            # AI 回复清洗开关
         'api_chat_meta_headers',            # 接口请求头附带群名/发言人
@@ -258,6 +262,8 @@ def _coerce_int_range_fields(merged_config):
         'chat_max_round_reset_days': (0, 365, 0),
         'merge_reply_window': (1, 300, 5),
         'merge_reply_max_count': (1, 100, 10),
+        'group_context_recent_count': (0, 500, 15),
+        'group_context_sender_count': (0, 500, 30),
     }
     for field, (lo, hi, default) in int_range_fields.items():
         if field in merged_config:

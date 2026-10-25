@@ -351,6 +351,38 @@ THINK_BLOCK_RE = re.compile(r'<think\b[^>]*>.*?</think>', re.IGNORECASE | re.DOT
 LEADING_THINK_RE = re.compile(r'^\s*<think\b[^>]*>', re.IGNORECASE)
 
 
+def select_group_context(history, sender, recent_count, sender_count):
+    """群聊精简上下文：群里最近 recent_count 条 + 更早记录中与 sender 相关的最近 sender_count 条。
+
+    "与 sender 相关"指 sender 自己的发言，以及机器人回他的话。机器人消息（attr == 'self'）
+    没记录回复对象，按两条规则归属：内容以 "@sender" 开头，或紧挨着的上一条非机器人消息
+    就是 sender 发的。返回值保持原有时间顺序。
+    """
+    history = list(history or [])
+    recent_count = max(0, int(recent_count))
+    sender_count = max(0, int(sender_count))
+    split = max(0, len(history) - recent_count)
+    older, recent = history[:split], history[split:]
+
+    personal = []
+    last_friend_sender = None
+    for h in older:
+        h_sender = h.get('sender', '')
+        if h.get('attr') == 'self':
+            content = str(h.get('content', ''))
+            if sender and (content.startswith('@' + sender) or last_friend_sender == sender):
+                personal.append(h)
+        else:
+            last_friend_sender = h_sender
+            if sender and h_sender == sender:
+                personal.append(h)
+    if sender_count:
+        personal = personal[-sender_count:]
+    else:
+        personal = []
+    return personal + recent
+
+
 def clean_ai_reply_text(text):
     """清理模型回复中的思考标签，避免把推理过程发送给用户。"""
     if text is None:
@@ -554,6 +586,9 @@ class WXBotConfig:
         self.memory_switch        = True      # 记忆开关（默认开启）
         self.memory_max_count     = 3000     # 单窗口最多存储条数（上限 5000）
         self.memory_context_count = 1000     # AI 请求时带入条数
+        self.group_context_by_sender    = False  # 群聊精简上下文：最近群聊 + 发言人个人记录
+        self.group_context_recent_count = 15     # 群里最近带入条数
+        self.group_context_sender_count = 30     # 发言人个人记录带入条数
 
         # ---------- 发送延迟配置 ----------
         self.reply_delay_switch = True  # 模拟人工操作延迟开关（默认开启）
@@ -894,6 +929,9 @@ class WXBotConfig:
         self.memory_switch        = self.config.get('memory_switch', True)
         self.memory_max_count     = self._coerce_int_range(self.config.get('memory_max_count'), 3000, 1, 99999)
         self.memory_context_count = self._coerce_int_range(self.config.get('memory_context_count'), 1000, 1, 99999)
+        self.group_context_by_sender    = bool(self.config.get('group_context_by_sender', False))
+        self.group_context_recent_count = self._coerce_int_range(self.config.get('group_context_recent_count'), 15, 0, 500)
+        self.group_context_sender_count = self._coerce_int_range(self.config.get('group_context_sender_count'), 30, 0, 500)
 
         # --- 发送延迟配置（缺键已由上面的 apply_defaults 统一补齐）---
         self.reply_delay_switch = bool(self.config.get('reply_delay_switch', True))
@@ -3792,9 +3830,18 @@ class WXBot:
                 try:
                     history = []
                     if self.config.memory_switch and self.memory_manager:
-                        history = self.memory_manager.get_messages(
-                            chat.who, self.config.memory_context_count
-                        )
+                        if self.config.group_context_by_sender:
+                            # 精简上下文：群里最近 N 条 + 该发言人（及机器人回他）的更早 M 条
+                            history = select_group_context(
+                                self.memory_manager.get_messages(chat.who, self.config.memory_max_count),
+                                message.sender,
+                                self.config.group_context_recent_count,
+                                self.config.group_context_sender_count,
+                            )
+                        else:
+                            history = self.memory_manager.get_messages(
+                                chat.who, self.config.memory_context_count
+                            )
                     # 构建有效 prompt（拆分开关开启时注入格式要求）
                     _base_group_prompt = self._get_group_prompt(chat.who, message.sender)
                     if self.config.group_split_reply_switch:
