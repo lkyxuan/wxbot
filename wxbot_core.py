@@ -380,6 +380,15 @@ def strip_leading_timestamps(text):
 AI_IMAGE_MARKER_RE = re.compile(r'^\s*\[图片\]\s*(.+?\.(?:png|jpe?g|gif|webp|bmp))\s*$', re.IGNORECASE | re.MULTILINE)
 
 
+# AI 回复是这个标记时什么都不发（自建网关在「AI 判断接话」的群里判断不接话时返回它）
+AI_NO_REPLY_MARK = '<NO_REPLY>'
+
+
+def is_ai_no_reply(reply):
+    """AI 回复是否是「不回复」标记（容忍前后空白和时间戳前缀）。"""
+    return isinstance(reply, str) and strip_leading_timestamps(reply).strip() == AI_NO_REPLY_MARK
+
+
 def extract_ai_reply_images(text, allowed_dirs):
     """拆出回复里的图片标记行，返回 (去掉标记后的文字, 允许发送的图片路径列表)。"""
     if not text or '[图片]' not in text:
@@ -574,6 +583,7 @@ class WXBotConfig:
         self.group_listen_only = False   # 群聊只监听不 AI 回复
         self.group_reply_at = False     # 群聊是否仅在被 @ 时才回复
         self.group_link_reply = False   # 仅@时回复模式下，分享卡片（链接/小程序/位置）不 @ 也交给 AI
+        self.group_ai_decide = []       # 「AI 判断接话」的群：每条消息都交给 AI，由接口决定接不接
         self.group_welcome = False      # 群新人欢迎语开关
         self.group_welcome_random = 1.0 # 群新人欢迎语触发概率（0.0~1.0）
         self.group_welcome_msg = "欢迎新朋友！请先查看群公告！"
@@ -898,6 +908,7 @@ class WXBotConfig:
         self.group_reply_at       = self.config.get('group_reply_at')
         self.group_reply_at_msg   = bool(self.config.get('group_reply_at_msg', True))
         self.group_link_reply     = bool(self.config.get('group_link_reply', False))
+        self.group_ai_decide      = list(self.config.get('group_ai_decide', []) or [])
         self.group_reply_quote    = bool(self.config.get('group_reply_quote', False))
         self.group_welcome        = self.config.get('group_welcome')
         self.group_welcome_random = self.config.get('group_welcome_random')
@@ -1552,7 +1563,8 @@ class OpenAIAPI:
         if not chat_meta:
             return None
         headers = {}
-        for key, header in (('chat', 'X-WX-Chat'), ('chat_type', 'X-WX-Chat-Type'), ('sender', 'X-WX-Sender')):
+        for key, header in (('chat', 'X-WX-Chat'), ('chat_type', 'X-WX-Chat-Type'), ('sender', 'X-WX-Sender'),
+                            ('mentioned', 'X-WX-Mentioned')):
             value = str(chat_meta.get(key) or '')
             if value:
                 headers[header] = _url_quote(value, safe="")
@@ -2572,9 +2584,10 @@ class WXBot:
                 ):
                     attempts.append((fallback_index, None))
 
-        # 会话元信息（群名/发言人）只在开关打开时、且只交给 OpenAI 兼容接口
+        # 会话元信息（群名/发言人）只在开关打开时、且只交给 OpenAI 兼容接口；
+        # 「AI 判断接话」的群（带 mentioned）总是附带，网关靠它判断要不要接话
         chat_meta = kwargs.pop('chat_meta', None)
-        if not getattr(self.config, 'api_chat_meta_headers', False):
+        if not getattr(self.config, 'api_chat_meta_headers', False) and not (chat_meta or {}).get('mentioned'):
             chat_meta = None
 
         for attempt_number, (index, current_api) in enumerate(attempts):
@@ -3535,6 +3548,7 @@ class WXBot:
             return False
         # 群聊"仅被 @ 时才回复"：没 @ 的消息本来就不会走 AI，缓冲了也只会被丢掉
         if (chat.who in self.config.group and self.config.group_reply_at
+                and chat.who not in self.config.group_ai_decide
                 and self.config.AtMe not in msg.content):
             return False
         return True
@@ -3881,8 +3895,11 @@ class WXBot:
             # 分享卡片（大众点评、高德等）和位置消息本身带不了 @，开了 group_link_reply 时同样交给 AI，
             # 由群绑定的接口（例如自建网关里的美食助手）决定怎么处理
             _is_shared_card = self.config.group_link_reply and message.type in GROUP_CARD_MSG_TYPES
-            if (self.config.AtMe in message.content and self.config.group_reply_at) \
-                    or not self.config.group_reply_at or _is_shared_card:
+            # 「AI 判断接话」的群每条都交给 AI，由接口（自建网关）决定接不接
+            _ai_decide = chat.who in self.config.group_ai_decide
+            _mentioned = self.config.AtMe in message.content
+            if (_mentioned and self.config.group_reply_at) \
+                    or not self.config.group_reply_at or _is_shared_card or _ai_decide:
                 if self.config.group_listen_only:
                     log(message=f"群组 {chat.who} 已启用只监听不AI回复，跳过 AI 调用")
                     return result
@@ -3917,6 +3934,8 @@ class WXBot:
                     else:
                         _effective_group_prompt = _base_group_prompt
                     _chat_meta = {'chat': chat.who, 'chat_type': 'group', 'sender': message.sender}
+                    if _ai_decide:
+                        _chat_meta['mentioned'] = '1' if _mentioned else '0'
                     if self.config.group_image_recognition_switch:
                         if getattr(message, 'merged_image', ''):
                             # 合并回复带图片：正文用合并后的文字（已去掉 @），图片取最后一张
@@ -3978,6 +3997,17 @@ class WXBot:
                     print(traceback.format_exc())
                     log(level="ERROR", message=str(e) + "\n群组中调用AI回复错误！！")
                     reply = "API返回错误，请稍后再试"
+
+                if is_ai_no_reply(reply):
+                    log(message=f"群组 {chat.who} AI 选择不回复")
+                    return result
+                if _ai_decide and not _mentioned and reply == "API返回错误，请稍后再试":
+                    # 没 @ 的消息是 AI 主动判断，接口出错就不说话，否则接口一挂每句话都刷一条兜底
+                    log(level="WARNING", message=f"群组 {chat.who} 判断接话时接口失败，不发兜底回复")
+                    return result
+                if _ai_decide and not strip_leading_timestamps(reply or '').strip():
+                    log(message=f"群组 {chat.who} AI 回复为空，不发送")
+                    return result
 
                 # 接口调用失败时替换为配置的固定回复
                 if reply == "API返回错误，请稍后再试":
@@ -4442,6 +4472,9 @@ class WXBot:
                 api_error_should_mark = True
             reply = self.config.api_error_reply
             api_error_reply = True
+        elif is_ai_no_reply(reply):
+            log(message=f"{chat.who} AI 选择不回复")
+            return True
         else:
             reply = self._clean_reply_for_send(reply)
 

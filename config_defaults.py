@@ -49,6 +49,7 @@ DEFAULT_CONFIG = {
     'group_reply_at': False,
     'group_reply_at_msg': True,
     'group_link_reply': False,
+    'group_ai_decide': [],
     'group_reply_quote': False,
     'group_welcome': False,
     'group_welcome_random': 1.0,
@@ -227,7 +228,7 @@ def _coerce_bool_fields(merged_config):
 
 
 def _coerce_list_fields(merged_config):
-    list_fields = ['ai_reply_image_dirs', 'listen_list', 'special_session_name', 'group', 'new_friend_msg', 'new_friend_tags', 'scheduled_msg_list', 'random_msg_list', 'scheduled_moments_list', 'random_moments_list', 'custom_forward_list']
+    list_fields = ['ai_reply_image_dirs', 'listen_list', 'special_session_name', 'group', 'group_ai_decide', 'new_friend_msg', 'new_friend_tags', 'scheduled_msg_list', 'random_msg_list', 'scheduled_moments_list', 'random_moments_list', 'custom_forward_list']
     for field in list_fields:
         if field in merged_config and not isinstance(merged_config[field], list):
             if isinstance(merged_config[field], str):
