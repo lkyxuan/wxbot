@@ -558,6 +558,9 @@ $(function(){
         '<select class="form-select group-api-select" style="width:160px;flex-shrink:0;" title="该群调用的AI接口（选默认则跟随全局配置）">'+
           buildGroupApiOpts(-1)+
         '</select>'+
+        '<label class="group-ai-decide-label" style="display:flex;align-items:center;gap:4px;flex-shrink:0;font-size:12.5px;white-space:nowrap;" title="每条消息都交给 AI，由接口判断接不接（需要自建网关配置 auto_reply）">'+
+          '<input type="checkbox" class="form-check-input group-ai-decide-check" style="margin:0;">AI 判断接话'+
+        '</label>'+
         '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
       '</div>'
     );
@@ -1452,7 +1455,7 @@ $(function(){
       admin:$('#admin').val(),
       group_welcome_msg:$('#group_welcome_msg').summernote('code'),
       default_prompt:$('#default_prompt_select').val()||'默认',
-      listen_list:[], special_session_name:[], group:[], group_api_map:{}, group_prompt_map:{}, group_sender_prompt_map:{}, new_friend_msg:[],
+      listen_list:[], special_session_name:[], group:[], group_ai_decide:[], group_api_map:{}, group_prompt_map:{}, group_sender_prompt_map:{}, new_friend_msg:[],
       chat_prompt_map:{}, chat_api_map:{}, chat_max_round_map:{},
       group_welcome_random:parseFloat($('#group_welcome_random').val()),
       keyword_dict:{},
@@ -1537,6 +1540,7 @@ $(function(){
       if(!isNaN(idx) && idx>=0){ configData.group_api_map[name]=idx; }
       var gpv=$(this).find('.group-prompt-select').val();
       if(gpv){ configData.group_prompt_map[name]=gpv; }
+      if($(this).find('.group-ai-decide-check').is(':checked')){ configData.group_ai_decide.push(name); }
     });
     // --- ⑤-b 群聊发言人专属 Prompt：{群名: {发言人: prompt}} ---
     $('#group_sender_prompt_container .group-sender-prompt-item').each(function(){
