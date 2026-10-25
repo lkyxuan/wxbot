@@ -620,6 +620,7 @@ class WXBotConfig:
         self.chat_max_round_map = {}        # 私聊白名单用户 -> 专属回复轮数上限
         self.group_prompt_map = {}          # 群组名称 -> prompt 名称
         self.group_sender_prompt_map = {}   # 群组名称 -> {群内显示名 -> prompt 名称}
+        self.group_sender_always_reply = {}  # 群组名称 -> [群内显示名]：这些人每句都回，等同被 @
 
         # ---------- 定时消息配置 ----------
         self.scheduled_msg_switch = False    # 定时消息总开关
@@ -1033,6 +1034,7 @@ class WXBotConfig:
         )
         self.group_prompt_map = self.config.get('group_prompt_map', {})
         self.group_sender_prompt_map = self.config.get('group_sender_prompt_map', {})
+        self.group_sender_always_reply = self.config.get('group_sender_always_reply', {})
         self.init_prompt_dir()
 
         # --- 接口调用失败时的固定回复 ---
@@ -3551,7 +3553,8 @@ class WXBot:
         # 群聊"仅被 @ 时才回复"：没 @ 的消息本来就不会走 AI，缓冲了也只会被丢掉
         if (chat.who in self.config.group and self.config.group_reply_at
                 and chat.who not in self.config.group_ai_decide
-                and self.config.AtMe not in msg.content):
+                and self.config.AtMe not in msg.content
+                and not self._is_always_reply_sender(chat.who, msg.sender)):
             return False
         return True
 
@@ -3954,7 +3957,9 @@ class WXBot:
             _is_shared_card = self.config.group_link_reply and message.type in GROUP_CARD_MSG_TYPES
             # 「AI 判断接话」的群每条都交给 AI，由接口（自建网关）决定接不接
             _ai_decide = chat.who in self.config.group_ai_decide
-            _mentioned = self.config.AtMe in message.content
+            # 「每句都回」的发言人等同被 @：不受仅@回复限制，判断接话的群也直接回答
+            _mentioned = self.config.AtMe in message.content \
+                or self._is_always_reply_sender(chat.who, message.sender)
             if (_mentioned and self.config.group_reply_at) \
                     or not self.config.group_reply_at or _is_shared_card or _ai_decide:
                 if self.config.group_listen_only:
@@ -4181,6 +4186,11 @@ class WXBot:
         else:
             name = self.config.default_prompt
         return self.config.get_prompt_content(name)
+
+    def _is_always_reply_sender(self, group_name, sender):
+        """该发言人在这个群里是否勾了「每句都回」。"""
+        senders = (self.config.group_sender_always_reply or {}).get(group_name) or []
+        return bool(sender) and sender in senders
 
     def _get_group_prompt(self, group_name, sender=None):
         """获取群组对应的 prompt 内容。
