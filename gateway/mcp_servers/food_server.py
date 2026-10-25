@@ -51,6 +51,8 @@ AMAP_HOSTS = ("amap.com", "autonavi.com")
 DEFAULT_CENTER = (120.040246, 30.315336, "云谷中心")
 
 MENTION_KINDS = ("推荐", "踩雷", "一般", "去过", "想去", "分享")
+# 群友评分：没报分数的评价按语气折算
+KIND_SCORE = {"推荐": 4, "一般": 3, "踩雷": 2}
 OPEN = "COALESCE(p.status, '') != '疑似关店'"
 
 server = MCPServer("food")
@@ -147,7 +149,8 @@ def _num(v):
 
 
 def _mention_stats(conn, place_ids):
-    """每家店的口碑汇总：{place_id: {"good", "bad", "went", "want", "total", "tags", "quotes"}}。"""
+    """每家店的口碑汇总：{place_id: {"good", "bad", "went", "want", "total", "tags", "quotes", "score", "raters"}}。
+    群友评分 score：每人只算最新的一次评价，报了分用原分，没报按语气折算（KIND_SCORE），满分 5；raters 是评过分的人数。"""
     stats = {}
     if not place_ids:
         return stats
@@ -159,10 +162,15 @@ def _mention_stats(conn, place_ids):
             f"SELECT * FROM mentions WHERE place_id IN ({','.join('?' * len(chunk))})", chunk
         ).fetchall()
     rows.sort(key=lambda m: (m["said_at"] or 0, m["id"]), reverse=True)
+    latest = {}  # (place_id, 发言人) -> 这个人最新一次给的分
     for m in rows:
         s = stats.setdefault(m["place_id"], {"good": 0, "bad": 0, "went": set(), "want": set(), "total": 0, "tags": [], "quotes": []})
         s["total"] += 1
         score = m["score"] or 0
+        personal = score or KIND_SCORE.get(m["kind"])
+        if personal:
+            # 按时间倒序，第一次遇到的就是这个人最新的评价；没署名的每条单独算
+            latest.setdefault((m["place_id"], m["sender"] or f"#{m['id']}"), personal)
         if m["kind"] == "推荐" or score >= 4:
             s["good"] += 1
         elif m["kind"] == "踩雷" or (score and score <= 2):
@@ -177,6 +185,15 @@ def _mention_stats(conn, place_ids):
                 s["tags"].append(t)
         if m["quote"] and len(s["quotes"]) < 2 and m["kind"] != "想去":
             s["quotes"].append(f"{m['sender'] or '群友'}：{m['quote']}")
+    for s in stats.values():
+        s["score"], s["raters"] = None, 0
+    for (place_id, _), score in latest.items():
+        s = stats[place_id]
+        s["raters"] += 1
+        s["score"] = (s["score"] or 0) + score
+    for s in stats.values():
+        if s["raters"]:
+            s["score"] = round(s["score"] / s["raters"], 1)
     return stats
 
 
@@ -185,8 +202,11 @@ def _stats_text(s):
         return ""
     parts = []
     counts = [f"推荐{s['good']}" if s["good"] else "", f"踩雷{s['bad']}" if s["bad"] else ""]
-    counts = [c for c in counts if c]
-    parts.append("群友口碑：" + ("、".join(counts) if counts else f"提到{s['total']}次"))
+    counts = "、".join(c for c in counts if c)
+    if s["raters"]:
+        parts.append(f"群友评分{s['score']}（{s['raters']}人评" + (f"，{counts}" if counts else "") + "）")
+    else:
+        parts.append("群友口碑：" + (counts or f"提到{s['total']}次"))
     if s["tags"]:
         parts.append("要点：" + "、".join(s["tags"][:5]))
     parts += [f"「{q}」" for q in s["quotes"]]
@@ -486,14 +506,16 @@ def record_mention(
             return f"没有编号为 {place_id} 的店，先用 find_place 找到它"
         if not _write_mention(conn, row["id"], sender, kind, quote, tags, score, via, msg_key, said_at):
             return f"这条消息已经给 {row['name']} 记过了"
+        s = _mention_stats(conn, [row["id"]]).get(row["id"])
     score_text = f" {int(score)}分" if 1 <= int(score or 0) <= 5 else ""
-    return f"已记录：{sender.strip()} 对 #{row['id']} {row['name']}：{kind}{score_text}" + (f"（{tags}）" if tags else "")
+    now = f"；现在群友评分{s['score']}（{s['raters']}人评）" if s and s["raters"] else ""
+    return f"已记录：{sender.strip()} 对 #{row['id']} {row['name']}：{kind}{score_text}" + (f"（{tags}）" if tags else "") + now
 
 
 @server.tool()
 def recommend(keyword: str = "", near: str = "", max_km: float = 3, max_cost: float = 0, limit: int = 5) -> str:
-    """按条件从店库里挑店推荐，群友口碑优先：有人推荐过的排前面，有人踩雷的排到没人评价过的店后面，
-    口碑相同时由近到远（高德评分几乎家家都有，分不出好坏，只作参考）。
+    """按条件从店库里挑店推荐，群友评分优先：群友评 3 分及以上的按评分排前面，没人评过的按距离由近到远，
+    群友评分低于 3 的排最后（高德评分几乎家家都有，分不出好坏，只作参考）。
     结果带距离、口碑摘要、群友原话和高德链接。
 
     keyword: 分类或口味关键词，例如「火锅」「面」「咖啡」「烧烤」，也会匹配群友口碑里的要点；不限就留空
@@ -529,10 +551,12 @@ def recommend(keyword: str = "", near: str = "", max_km: float = 3, max_cost: fl
         stats = _mention_stats(conn, [r["id"] for _, r in hits])
 
     def rank(item):
+        # 群友评 3 分及以上的店按群友评分排最前；没人评过的按距离；群友评分低于 3 的排最后
         d, r = item
         s = stats.get(r["id"])
-        mouth = (s["good"] * 3 - s["bad"] * 4 + s["total"] * 0.5) if s else 0
-        return (-mouth, d)
+        if not s or not s["raters"]:
+            return (1, 0, d)
+        return (0 if s["score"] >= 3 else 2, -s["score"], d)
 
     hits.sort(key=rank)
     hits = hits[: max(1, min(int(limit), 10))]
