@@ -50,7 +50,19 @@
         "food"
       ],
       "max_tool_rounds": 6,
-      "use_client_prompt": true
+      "use_client_prompt": true,
+      "auto_reply": {
+        "judge_llm": {},
+        "context_messages": 8,
+        "reply_when": "有人问吃什么、去哪吃、某家店怎么样、求推荐餐厅",
+        "labels": {
+          "review": "这句话在评价某家具体的店（好吃、难吃、推荐、踩雷），或分享了店铺卡片"
+        },
+        "silent_on_labels": [
+          "review"
+        ],
+        "cooldown_seconds": 600
+      }
     }
   }
 }

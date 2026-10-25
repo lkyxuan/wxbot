@@ -24,11 +24,14 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
 import uuid
 from contextlib import AsyncExitStack
+from datetime import datetime
+from urllib.parse import unquote
 
 from flask import Flask, Response, abort, jsonify, redirect, request, send_from_directory
 from mcp import ClientSession, StdioServerParameters
@@ -39,6 +42,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("gateway")
+
+# 智能体不想说话时回这个标记，机器人收到后什么都不发
+NO_REPLY = "<NO_REPLY>"
 
 
 # ============================================================
@@ -178,9 +184,9 @@ class AgentRunner:
             self.clients[key] = OpenAI(base_url=base_url, api_key=api_key, timeout=120.0)
         return self.clients[key], llm.get("model"), llm.get("extra_body")
 
-    def build_messages(self, agent, incoming):
+    def build_messages(self, agent, incoming, notes=()):
         """智能体提示词放最前；机器人面板里给群配的 prompt（system）默认接在后面，
-        这样人设 / 语气仍可在面板里调，能力边界由网关决定。"""
+        这样人设 / 语气仍可在面板里调，能力边界由网关决定。notes 是网关按本次情况追加的说明。"""
         system_parts = [agent.get("prompt", "")]
         rest = []
         for m in incoming:
@@ -189,13 +195,14 @@ class AgentRunner:
                     system_parts.append(m["content"] if isinstance(m["content"], str) else json.dumps(m["content"], ensure_ascii=False))
             else:
                 rest.append(m)
+        system_parts.extend(notes)
         system = "\n\n".join(p for p in system_parts if p)
         return ([{"role": "system", "content": system}] if system else []) + rest
 
-    def run(self, agent_name, incoming_messages):
+    def run(self, agent_name, incoming_messages, notes=()):
         agent = self.cfg["agents"][agent_name]
         client, model, extra_body = self._llm(agent)
-        messages = self.build_messages(agent, incoming_messages)
+        messages = self.build_messages(agent, incoming_messages, notes)
         tools, tool_map = self.mcp.openai_tools(agent.get("mcp", []))
         max_rounds = int(agent.get("max_tool_rounds", 5))
 
@@ -237,10 +244,182 @@ class AgentRunner:
 
 
 # ============================================================
+# 自己判断接不接话（智能体配置里的 auto_reply）
+# ------------------------------------------------------------
+# 机器人在开了「AI 判断接话」的群里每句话都发过来，并用 X-WX-Mentioned
+# 告诉网关有没有 @ 机器人。没带这个请求头的请求一律照常回答。
+#   被 @         → 完整智能体回答
+#   没被 @       → 先用便宜模型 + 最近几条聊天判断，输出「接不接」和若干标签
+#     要接且不在冷却期       → 完整智能体回答
+#     命中 silent_on_labels → 完整智能体静默跑一遍（可以调工具记录），回复丢弃
+#     其它                  → 返回 NO_REPLY
+# ============================================================
+def content_text(content):
+    """消息内容转纯文本：多模态列表里的图片记成 [图片]。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+            elif isinstance(item, dict):
+                parts.append("[图片]")
+        return " ".join(p for p in parts if p)
+    return "" if content is None else str(content)
+
+
+def parse_judge_json(text):
+    """从判断模型的输出里取 JSON 对象；模型偶尔会包一层 ```json，取第一个 {...}。"""
+    match = re.search(r"\{.*\}", text or "", re.S)
+    if not match:
+        raise ValueError(f"判断结果不是 JSON：{text!r}")
+    return json.loads(match.group(0))
+
+
+class AutoReply:
+    def __init__(self, runner):
+        self.runner = runner
+        self._last_spoke = {}           # 冷却键 -> 上次主动发言时间（time.monotonic）
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _transcript(messages, limit):
+        lines = []
+        for m in messages:
+            role = m.get("role")
+            if role == "system":
+                continue
+            text = content_text(m.get("content")).strip()
+            if not text:
+                continue
+            # 机器人发过的话标成「机器人」；群友的消息本来就是「昵称: 内容」
+            lines.append(f"机器人: {text}" if role == "assistant" else text)
+        return lines[-limit:] if limit > 0 else lines
+
+    def judge(self, agent_name, agent, messages):
+        """返回 {"reply": bool, "labels": {标签: bool}}；出错时按不接话处理。"""
+        ar = agent["auto_reply"]
+        labels = ar.get("labels", {})
+        lines = self._transcript(messages, int(ar.get("context_messages", 8)))
+        if not lines:
+            return {"reply": False, "labels": {}}
+        label_rules = "\n".join(f"- {name}：{desc}" for name, desc in labels.items()) or "（无）"
+        label_example = ", ".join(f'"{name}": false' for name in labels)
+        system = (
+            "你在帮一个微信群里的 AI 助手判断：群里最新这条消息（最后一行），助手要不要主动接话。"
+            "这条消息没有 @ 助手，大多数闲聊都不该接，拿不准时不接。\n\n"
+            f"需要接话的情况：\n{ar.get('reply_when') or '有人明显在向助手提问或求助'}\n\n"
+            f"另外判断这些标签（只看最后一行）：\n{label_rules}\n\n"
+            "只输出一个 JSON 对象，不要别的文字，格式：\n"
+            f'{{"reply": false, "labels": {{{label_example}}}}}'
+        )
+        user = "最近的群聊（每行「昵称: 内容」，最后一行是最新消息）：\n" + "\n".join(lines)
+        llm = dict(self.runner.cfg.get("llm", {}))
+        llm.update(agent.get("llm", {}))
+        llm.update(ar.get("judge_llm", {}))
+        try:
+            client, model, extra_body = self.runner._llm({"llm": llm})
+            kwargs = {"model": model, "temperature": 0,
+                      "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+            if extra_body:
+                kwargs["extra_body"] = extra_body
+            resp = client.chat.completions.create(**kwargs)
+            data = parse_judge_json(resp.choices[0].message.content)
+        except Exception as e:
+            log.warning("[%s] 判断接话失败，按不接话处理：%s", agent_name, e)
+            return {"reply": False, "labels": {}}
+        raw_labels = data.get("labels") if isinstance(data.get("labels"), dict) else {}
+        return {
+            "reply": data.get("reply") is True,
+            "labels": {name: raw_labels.get(name) is True for name in labels},
+        }
+
+    def _claim_cooldown(self, key, seconds):
+        """不在冷却期就占住（记下现在的时间）并返回 True。先占后跑，防止几条消息同时触发。"""
+        now = time.monotonic()
+        with self._lock:
+            last = self._last_spoke.get(key)
+            if last is not None and now - last < seconds:
+                return False
+            self._last_spoke[key] = now
+            return True
+
+    def _release_cooldown(self, key):
+        # 占了冷却但最后没说话（智能体回了 NO_REPLY），不算一次主动发言
+        with self._lock:
+            self._last_spoke.pop(key, None)
+
+    def respond(self, agent_name, messages, meta):
+        agent = self.runner.cfg["agents"][agent_name]
+        ar = agent.get("auto_reply")
+        if not ar or meta.get("mentioned") is None:
+            return self.runner.run(agent_name, messages)
+
+        if meta["mentioned"]:
+            log.info("[%s] 被 @，直接回答", agent_name)
+            return self.runner.run(agent_name, messages)
+
+        base_note = f"如果其实没什么需要你说的，只回复 {NO_REPLY}，不要回复其它内容。"
+
+        verdict = self.judge(agent_name, agent, messages)
+        hit = [name for name, on in verdict["labels"].items() if on]
+        silent_on = ar.get("silent_on_labels", [])
+        cooldown_key = meta.get("chat") or agent_name
+        if verdict["reply"] and self._claim_cooldown(cooldown_key, float(ar.get("cooldown_seconds", 600))):
+            log.info("[%s] 判断：接话，标签 %s", agent_name, hit)
+            note = "这条消息没有 @ 你，是你判断后主动接话。"
+            if hit:
+                note += f"判断阶段命中的标签：{'、'.join(hit)}。"
+            content = self.runner.run(agent_name, messages, [base_note, note])
+            if not content or content.strip() == NO_REPLY:
+                self._release_cooldown(cooldown_key)
+            return content
+
+        if "*" in silent_on or any(name in silent_on for name in hit):
+            log.info("[%s] 判断：%s，静默旁听，标签 %s", agent_name,
+                     "要接但在冷却期" if verdict["reply"] else "不接话", hit)
+            last = next((content_text(m.get("content")) for m in reversed(messages)
+                         if m.get("role") == "user"), "")
+            msg_key = hashlib.sha1(
+                f"{meta.get('chat', '')}\n{meta.get('sender', '')}\n{last}".encode("utf-8")).hexdigest()[:16]
+            note = (
+                "【旁听】这条消息不需要回复，你的回复不会发到群里。"
+                "需要记录的话用工具记录，然后只回复 " + NO_REPLY + "。\n"
+                f"命中的标签：{'、'.join(hit) or '无'}\n"
+                f"群名：{meta.get('chat', '')}\n发言人：{meta.get('sender', '')}\n"
+                f"收到时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"消息标识（可用于去重）：{msg_key}"
+            )
+            try:
+                self.runner.run(agent_name, messages, [note])
+            except Exception:
+                log.exception("[%s] 静默旁听执行失败", agent_name)
+            return NO_REPLY
+
+        log.info("[%s] 判断：%s", agent_name, "要接但在冷却期" if verdict["reply"] else "不接话")
+        return NO_REPLY
+
+
+# ============================================================
 # HTTP 接口（OpenAI 兼容）
 # ============================================================
+def request_meta():
+    """机器人带来的会话信息（X-WX-* 请求头，中文是 UTF-8 百分号编码）。
+    mentioned：None 表示没带这个头（照常回答），True/False 表示有没有 @ 机器人。"""
+    def header(name):
+        return unquote(request.headers.get(name, ""))
+    mentioned = request.headers.get("X-WX-Mentioned")
+    return {
+        "chat": header("X-WX-Chat"),
+        "sender": header("X-WX-Sender"),
+        "mentioned": None if mentioned is None else mentioned.strip() == "1",
+    }
+
+
 def create_app(cfg, runner):
     app = Flask(__name__)
+    auto_reply = AutoReply(runner)
     api_keys = [k for k in cfg.get("api_keys", []) if k]
     # 公开的静态页面（例如美食网页地图）：{URL 前缀: [目录, ...]}，按顺序找到第一个存在的文件。
     # 这些路径不需要 Key，只放可以公开的内容。
@@ -299,7 +478,7 @@ def create_app(cfg, runner):
                 "type": "invalid_request_error"}}), 404
         started = time.time()
         try:
-            content = runner.run(agent_name, body.get("messages", []))
+            content = auto_reply.respond(agent_name, body.get("messages", []), request_meta())
         except Exception as e:
             log.exception("智能体 %s 执行失败", agent_name)
             return jsonify({"error": {"message": str(e), "type": "server_error"}}), 500
