@@ -319,15 +319,17 @@ def _clean_keyword(text):
     return " ".join(keyword.split())[:40]
 
 
-def _local_matches(conn, keyword, limit=5):
-    """在店库里按店名找：先整串匹配，再用括号前的主店名匹配。"""
+def _local_matches(conn, keyword, city="", limit=5):
+    """在店库里按店名找：先整串匹配，再用括号前的主店名匹配。给了城市就只找这个城市的店。"""
     tries = [keyword]
     base = re.split(r"[(（]", keyword)[0].strip()
     if base and base != keyword:
         tries.append(base)
+    city_sql = " AND city LIKE ?" if city.strip() else ""
     for kw in tries:
+        args = [f"%{kw}%"] + ([f"%{city.strip()}%"] if city.strip() else []) + [limit]
         rows = conn.execute(
-            "SELECT * FROM places WHERE name LIKE ? ORDER BY COALESCE(distance_m, 1e12) LIMIT ?", (f"%{kw}%", limit)
+            f"SELECT * FROM places WHERE name LIKE ?{city_sql} ORDER BY COALESCE(distance_m, 1e12) LIMIT ?", args
         ).fetchall()
         if rows:
             return rows
@@ -352,8 +354,19 @@ def _insert_place(conn, p, source):
 
 
 def _write_mention(conn, place_id, sender, kind, quote_text="", tags="", score=0, via="", msg_key="", said_at=""):
-    """写一条口碑，返回 True；同一消息同一家店已经记过时返回 False。"""
+    """写一条口碑，返回 True；同一消息同一家店已经记过时返回 False。
+    例外：先记了「分享」（save_place 自动记的），同一条消息再记评价时，把那条分享升级成评价。"""
     score = int(score or 0)
+    if kind != "分享" and msg_key.strip():
+        cur = conn.execute(
+            """UPDATE mentions SET kind = ?, score = ?, tags = ?, quote = COALESCE(NULLIF(?, ''), quote),
+                                   via = COALESCE(NULLIF(?, ''), via)
+               WHERE msg_key = ? AND place_id = ? AND kind = '分享'""",
+            (kind, score if 1 <= score <= 5 else None, tags.strip(), quote_text.strip(), via.strip(),
+             msg_key.strip(), place_id),
+        )
+        if cur.rowcount:
+            return True
     cur = conn.execute(
         """INSERT OR IGNORE INTO mentions (place_id, sender, said_at, kind, score, tags, quote, via, msg_key, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -385,7 +398,7 @@ def find_place(text: str, city: str = "杭州") -> str:
                 local.append(row)
         keyword = _clean_keyword(text)
         if not local and not ids and keyword:
-            local = _local_matches(conn, keyword)
+            local = _local_matches(conn, keyword, city)
         if local:
             stats = _mention_stats(conn, [r["id"] for r in local])
             return "店库里已有：\n" + "\n".join(_place_line(r, stats.get(r["id"])) for r in local)
