@@ -550,12 +550,15 @@ $(function(){
 
   // ===== 群组卡片：每个群一张，展开后配置接口 / Prompt / 判断接话 / 发言人 Prompt =====
   var groupCandidates = {groups: [], members: {}};
-  function buildGsdRow(sender, promptName){
+  function buildGsdRow(sender, promptName, always){
     var $row = $('<div class="list-item gsp-row" style="gap:6px;margin-bottom:6px;"></div>');
     $('<input type="text" class="form-control gsp-sender" list="wx-member-datalist" placeholder="发言人（可下拉选择）">')
       .val(sender || '').appendTo($row);
-    $('<select class="form-select group-sender-prompt-select" style="width:145px;flex-shrink:0;" title="该发言人使用的Prompt"></select>')
+    $('<select class="form-select group-sender-prompt-select" style="width:145px;flex-shrink:0;" title="叠加在群 Prompt 后的专属设定（默认=不加）"></select>')
       .html(buildPromptOpts(promptName || '')).appendTo($row);
+    var $always = $('<label style="display:flex;align-items:center;gap:4px;font-size:12.5px;white-space:nowrap;margin:0;flex-shrink:0;" title="他说的每句话都当作 @ 了机器人"></label>').appendTo($row);
+    $('<input type="checkbox" class="form-check-input gsp-always" style="margin:0;">').prop('checked', !!always).appendTo($always);
+    $always.append('每句都回');
     $('<button type="button" class="btn-rm btn-remove-item" title="删除"><i class="bi bi-x-lg"></i></button>').appendTo($row);
     return $row;
   }
@@ -582,7 +585,12 @@ $(function(){
 
     $('<div class="cfg-label" style="font-size:13px;margin-bottom:6px;">发言人专属 Prompt</div>').appendTo($body);
     var $list = $('<div class="gsp-list"></div>').appendTo($body);
-    $.each(opts.senders || {}, function(sender, promptName){ $list.append(buildGsdRow(sender, promptName)); });
+    var always = opts.always || [], shown = [];
+    $.each(opts.senders || {}, function(sender, promptName){
+      $list.append(buildGsdRow(sender, promptName, always.indexOf(sender) !== -1));
+      shown.push(sender);
+    });
+    always.forEach(function(sender){ if (shown.indexOf(sender) === -1) $list.append(buildGsdRow(sender, '', true)); });
     $('<button type="button" class="btn-add btn-add-gsp"><i class="bi bi-plus-circle"></i> 添加发言人</button>').appendTo($body);
     updateGroupCardSummary($card);
     return $card;
@@ -591,7 +599,9 @@ $(function(){
     var parts = [];
     var p = $card.find('.group-prompt-select').val();
     if (p) parts.push(p);
-    var n = $card.find('.gsp-row').filter(function(){ return $(this).find('.gsp-sender').val().trim(); }).length;
+    var n = $card.find('.gsp-row').filter(function(){
+      return $(this).find('.gsp-sender').val().trim() && ($(this).find('.group-sender-prompt-select').val() || $(this).find('.gsp-always').is(':checked'));
+    }).length;
     if (n) parts.push(n + ' 位发言人');
     if ($card.find('.group-ai-decide-check').is(':checked')) parts.push('判断接话');
     $card.find('.group-card-summary').text(parts.join(' · '));
@@ -622,7 +632,8 @@ $(function(){
         prompt: (cfg.group_prompt_map || {})[g],
         api: (cfg.group_api_map || {})[g],
         decide: (cfg.group_ai_decide || []).indexOf(g) !== -1,
-        senders: (cfg.group_sender_prompt_map || {})[g]
+        senders: (cfg.group_sender_prompt_map || {})[g],
+        always: (cfg.group_sender_always_reply || {})[g]
       }));
     });
     loadGroupCandidates();
@@ -1550,7 +1561,7 @@ $(function(){
       admin:$('#admin').val(),
       group_welcome_msg:$('#group_welcome_msg').summernote('code'),
       default_prompt:$('#default_prompt_select').val()||'默认',
-      listen_list:[], special_session_name:[], group:[], group_ai_decide:[], group_api_map:{}, group_prompt_map:{}, group_sender_prompt_map:{}, new_friend_msg:[],
+      listen_list:[], special_session_name:[], group:[], group_ai_decide:[], group_api_map:{}, group_prompt_map:{}, group_sender_prompt_map:{}, group_sender_always_reply:{}, new_friend_msg:[],
       chat_prompt_map:{}, chat_api_map:{}, chat_max_round_map:{},
       group_welcome_random:parseFloat($('#group_welcome_random').val()),
       keyword_dict:{},
@@ -1641,8 +1652,12 @@ $(function(){
       $card.find('.gsp-row').each(function(){
         var sdr=$(this).find('.gsp-sender').val().trim();
         var p=$(this).find('.group-sender-prompt-select').val();
-        if(!sdr || !p) return;
-        (configData.group_sender_prompt_map[name] = configData.group_sender_prompt_map[name] || {})[sdr]=p;
+        if(!sdr) return;
+        if(p){ (configData.group_sender_prompt_map[name] = configData.group_sender_prompt_map[name] || {})[sdr]=p; }
+        if($(this).find('.gsp-always').is(':checked')){
+          var arr = configData.group_sender_always_reply[name] = configData.group_sender_always_reply[name] || [];
+          if(arr.indexOf(sdr) === -1) arr.push(sdr);
+        }
       });
     });
     // 不在监听列表里的群（如被 /删除群 移出）没有卡片：原样保留它们的发言人 Prompt，重新加回来时还在
@@ -1651,6 +1666,11 @@ $(function(){
       $.each(cfg.group_sender_prompt_map || {}, function(g, senders){
         if (listed.indexOf(g) === -1 && !configData.group_sender_prompt_map[g]) {
           configData.group_sender_prompt_map[g] = senders;
+        }
+      });
+      $.each(cfg.group_sender_always_reply || {}, function(g, senders){
+        if (listed.indexOf(g) === -1 && !configData.group_sender_always_reply[g]) {
+          configData.group_sender_always_reply[g] = senders;
         }
       });
     })();

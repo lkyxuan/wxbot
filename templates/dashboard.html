@@ -893,7 +893,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <label class="cfg-label">群组监听列表</label>
       <div class="cfg-hint" style="margin-bottom:10px;padding:10px 14px;background:#f0f7ff;border:1px solid #bcd4f5;border-radius:6px;color:#1a5fa8;font-size:12.5px;line-height:1.8;">
         <i class="bi bi-info-circle" style="color:#2d8cf0;"></i>
-        <strong>每个群一张卡片</strong>：点群名左边的箭头展开，配置这个群的 AI 接口、Prompt、AI 判断接话，以及群里指定发言人的专属 Prompt（优先级高于群 Prompt）。<br>
+        <strong>每个群一张卡片</strong>：点群名左边的箭头展开，配置这个群的 AI 接口、Prompt、AI 判断接话，以及群里指定发言人的专属 Prompt（叠加在群 Prompt 后面：群人设照旧，这个人说话时再加上这段专属设定，只写针对他的内容即可）。发言人勾「每句都回」后，他说的每句话都当作 @ 了机器人，不用 @ 也会回复。<br>
         群名和发言人都可以下拉选择，也可以直接输入。群名候选来自已监听的群、机器人记忆和「从微信读取群列表」；发言人候选来自这个群记忆里说过话的人（好友显示备注，非好友显示群昵称）。<br>
         选择 <strong>默认</strong> 则跟随「模型配置」或全局 Prompt；如新增了接口或 Prompt 但未看到，请保存配置后刷新页面。<br>
         <strong>AI 判断接话</strong>：勾选后该群不受「仅@时回复」限制，每条消息都交给 AI，由接口决定接不接；AI 回复 &lt;NO_REPLY&gt; 时不发送。需要配合自建网关的 auto_reply 使用，否则每句话都会回复。
@@ -1972,7 +1972,8 @@ window.__GROUP_CFG__ = {
   group_prompt_map: {{ config.group_prompt_map | tojson }},
   group_api_map: {{ config.group_api_map | tojson }},
   group_ai_decide: {{ config.get('group_ai_decide', []) | tojson }},
-  group_sender_prompt_map: {{ config.group_sender_prompt_map | tojson }}
+  group_sender_prompt_map: {{ config.group_sender_prompt_map | tojson }},
+  group_sender_always_reply: {{ config.get('group_sender_always_reply', {}) | tojson }}
 };
 window.withBase = function(path){
   var base = window.__BASE_PATH__ || '';

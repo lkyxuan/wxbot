@@ -6,7 +6,7 @@
   - web_server.main() 建文件时的 default_config（96 个键）
   - wxbot_core.create_new_config_file() 的 base_config（96 个键，与上一处是两份重复拷贝）
   - web_server.dashboard() 给老配置补键的 76 个 setdefault
-现在三者合并为本文件的 DEFAULT_CONFIG（105 个键），老配置补键由 apply_defaults() 统一完成。
+现在三者合并为本文件的 DEFAULT_CONFIG（107 个键），老配置补键由 apply_defaults() 统一完成。
 
 迁移原则
 --------
@@ -79,6 +79,7 @@ DEFAULT_CONFIG = {
     'chat_max_round_map': {},
     'group_prompt_map': {},
     'group_sender_prompt_map': {},
+    'group_sender_always_reply': {},
     'scheduled_msg_switch': False,
     'scheduled_msg_list': [],
     'random_msg_switch': False,
@@ -430,6 +431,24 @@ def _coerce_dict_fields(merged_config):
                 if inner:
                     clean[g] = inner
         merged_config['group_sender_prompt_map'] = clean
+
+    # group_sender_always_reply: {群名: [群内显示名]}，去空去重
+    if 'group_sender_always_reply' in merged_config:
+        gsar = merged_config['group_sender_always_reply']
+        clean = {}
+        if isinstance(gsar, dict):
+            for g, senders in gsar.items():
+                g = str(g).strip()
+                if not g or not isinstance(senders, list):
+                    continue
+                names = []
+                for s in senders:
+                    s = str(s).strip()
+                    if s and s not in names:
+                        names.append(s)
+                if names:
+                    clean[g] = names
+        merged_config['group_sender_always_reply'] = clean
 
 def normalize(config):
     """统一规范化：清掉旧 API 字段 + 6 类类型校验。

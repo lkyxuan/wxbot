@@ -620,6 +620,7 @@ class WXBotConfig:
         self.chat_max_round_map = {}        # 私聊白名单用户 -> 专属回复轮数上限
         self.group_prompt_map = {}          # 群组名称 -> prompt 名称
         self.group_sender_prompt_map = {}   # 群组名称 -> {群内显示名 -> prompt 名称}
+        self.group_sender_always_reply = {}  # 群组名称 -> [群内显示名]：这些人每句都回，等同被 @
 
         # ---------- 定时消息配置 ----------
         self.scheduled_msg_switch = False    # 定时消息总开关
@@ -1033,6 +1034,7 @@ class WXBotConfig:
         )
         self.group_prompt_map = self.config.get('group_prompt_map', {})
         self.group_sender_prompt_map = self.config.get('group_sender_prompt_map', {})
+        self.group_sender_always_reply = self.config.get('group_sender_always_reply', {})
         self.init_prompt_dir()
 
         # --- 接口调用失败时的固定回复 ---
@@ -3551,7 +3553,8 @@ class WXBot:
         # 群聊"仅被 @ 时才回复"：没 @ 的消息本来就不会走 AI，缓冲了也只会被丢掉
         if (chat.who in self.config.group and self.config.group_reply_at
                 and chat.who not in self.config.group_ai_decide
-                and self.config.AtMe not in msg.content):
+                and self.config.AtMe not in msg.content
+                and not self._is_always_reply_sender(chat.who, msg.sender)):
             return False
         return True
 
@@ -3954,7 +3957,9 @@ class WXBot:
             _is_shared_card = self.config.group_link_reply and message.type in GROUP_CARD_MSG_TYPES
             # 「AI 判断接话」的群每条都交给 AI，由接口（自建网关）决定接不接
             _ai_decide = chat.who in self.config.group_ai_decide
-            _mentioned = self.config.AtMe in message.content
+            # 「每句都回」的发言人等同被 @：不受仅@回复限制，判断接话的群也直接回答
+            _mentioned = self.config.AtMe in message.content \
+                or self._is_always_reply_sender(chat.who, message.sender)
             if (_mentioned and self.config.group_reply_at) \
                     or not self.config.group_reply_at or _is_shared_card or _ai_decide:
                 if self.config.group_listen_only:
@@ -4182,17 +4187,28 @@ class WXBot:
             name = self.config.default_prompt
         return self.config.get_prompt_content(name)
 
+    def _is_always_reply_sender(self, group_name, sender):
+        """该发言人在这个群里是否勾了「每句都回」。"""
+        senders = (self.config.group_sender_always_reply or {}).get(group_name) or []
+        return bool(sender) and sender in senders
+
     def _get_group_prompt(self, group_name, sender=None):
         """获取群组对应的 prompt 内容。
 
-        优先级：group_sender_prompt_map[群][发言人] > group_prompt_map[群] > default_prompt。
+        基础是群 prompt（group_prompt_map[群]，未配置则 default_prompt）；
+        若 group_sender_prompt_map[群][发言人] 有配置，把它作为"当前发言人的专属设定"接在后面（叠加，不替换）。
         发言人按群里显示的名字匹配（好友备注或群昵称），wxautox4 拿不到微信 ID。
         """
+        base_name = self.config.group_prompt_map.get(group_name) or self.config.default_prompt
+        base = self.config.get_prompt_content(base_name)
         sender_map = (self.config.group_sender_prompt_map or {}).get(group_name) or {}
-        name = (sender and sender_map.get(sender)) \
-            or self.config.group_prompt_map.get(group_name) \
-            or self.config.default_prompt
-        return self.config.get_prompt_content(name)
+        sender_name = sender and sender_map.get(sender)
+        if not sender_name or sender_name == base_name:
+            return base
+        extra = self.config.get_prompt_content(sender_name)
+        if not extra or extra == base:
+            return base
+        return f"{base}\n\n【当前发言人「{sender}」的专属设定】\n{extra}" if base else extra
 
     def _send_group_reply(self, chat, message, content, at_sender=False, quote=False):
         """发送群聊回复；引用失败时降级为普通发送，避免中断监听回调。
