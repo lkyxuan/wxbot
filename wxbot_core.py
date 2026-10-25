@@ -2451,6 +2451,8 @@ class WXBot:
         # ⚠ flush 只在主循环线程里做（_check_merge_buffers），绝不新开线程碰 wxautox。
         self._merge_buffers = {}
         self._merge_lock    = threading.Lock()
+        # 面板发来的界面读取请求（如读取微信群列表），只在主循环线程里执行，原因同合并回复
+        self._ui_requests   = queue.Queue()
 
         # 私聊回复轮数计数器
         _base = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.abspath(".")
@@ -3593,6 +3595,61 @@ class WXBot:
             count = len(self._merge_buffers)
             self._merge_buffers.clear()
         return count
+
+    # ----------------------------------------------------------
+    # 面板 → 主循环的界面读取请求
+    # 面板线程不能直接操作微信界面（会和监听/发送并发，且没 CoInitialize），
+    # 所以把请求放进队列，由主循环每轮取出执行，面板线程等结果。
+    # ----------------------------------------------------------
+
+    def request_recent_groups(self, timeout=90):
+        """（面板线程调用）请主循环读取微信最近群聊列表，返回群名列表。"""
+        box, done = {}, threading.Event()
+        self._ui_requests.put(('recent_groups', box, done))
+        if not done.wait(timeout):
+            raise TimeoutError('读取超时：机器人主循环没有响应')
+        if 'error' in box:
+            raise RuntimeError(box['error'])
+        return box.get('result', [])
+
+    @staticmethod
+    def _normalize_group_names(raw):
+        """兼容 GetAllRecentGroups 的几种返回形式：字符串列表、(群名, 人数) 元组列表、带 name 属性的对象。"""
+        if not isinstance(raw, (list, tuple)):
+            raise RuntimeError(f'微信返回了无法识别的结果：{raw}')
+        names = []
+        for item in raw:
+            if isinstance(item, (list, tuple)):
+                item = item[0] if item else ''
+            elif not isinstance(item, str):
+                item = getattr(item, 'name', '') or ''
+            name = str(item).strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    def _run_ui_requests(self):
+        """主循环每轮调用：执行面板排队的界面读取请求。"""
+        while True:
+            try:
+                kind, box, done = self._ui_requests.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                if kind == 'recent_groups':
+                    fn = getattr(self.wx, 'GetAllRecentGroups', None)
+                    if fn is None:
+                        box['error'] = '当前 wxautox4 版本不支持读取群列表（没有 GetAllRecentGroups）'
+                    else:
+                        box['result'] = self._normalize_group_names(fn())
+                        log(message=f"已读取微信群列表：{len(box['result'])} 个")
+                else:
+                    box['error'] = f'未知请求：{kind}'
+            except Exception as e:
+                box['error'] = f'读取失败：{e}'
+                log(level="WARNING", message=f"面板请求 {kind} 执行失败：{e}")
+            finally:
+                done.set()
 
     def _check_merge_buffers(self):
         """主循环每轮调用：把到期或达到条数上限的缓冲合并回复。
@@ -6101,6 +6158,9 @@ class WXBot:
 
                     # ---- 多条消息缓冲合并回复（到期/满条数才回复）----
                     self._check_merge_buffers()
+
+                    # ---- 面板发来的界面读取请求（读取微信群列表等）----
+                    self._run_ui_requests()
 
                     # ---- 定时任务执行（定时消息 / 定时朋友圈）----
                     # 只跑本实例调度器里的任务：模块级全局 schedule 是进程级的，

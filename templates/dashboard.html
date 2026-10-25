@@ -893,58 +893,19 @@ html.icons-pref-local [class*=" bi-"]::before {
       <label class="cfg-label">群组监听列表</label>
       <div class="cfg-hint" style="margin-bottom:10px;padding:10px 14px;background:#f0f7ff;border:1px solid #bcd4f5;border-radius:6px;color:#1a5fa8;font-size:12.5px;line-height:1.8;">
         <i class="bi bi-info-circle" style="color:#2d8cf0;"></i>
-        <strong>群组专属 Prompt 和接口</strong>：每个群聊可单独选择调用的 AI 接口和 Prompt，实现一个面板管理多个不同群聊场景。<br>
+        <strong>每个群一张卡片</strong>：点群名左边的箭头展开，配置这个群的 AI 接口、Prompt、AI 判断接话，以及群里指定发言人的专属 Prompt（优先级高于群 Prompt）。<br>
+        群名和发言人都可以下拉选择，也可以直接输入。群名候选来自已监听的群、机器人记忆和「从微信读取群列表」；发言人候选来自这个群记忆里说过话的人（好友显示备注，非好友显示群昵称）。<br>
         选择 <strong>默认</strong> 则跟随「模型配置」或全局 Prompt；如新增了接口或 Prompt 但未看到，请保存配置后刷新页面。<br>
         <strong>AI 判断接话</strong>：勾选后该群不受「仅@时回复」限制，每条消息都交给 AI，由接口决定接不接；AI 回复 &lt;NO_REPLY&gt; 时不发送。需要配合自建网关的 auto_reply 使用，否则每句话都会回复。
       </div>
-      <div id="group_container">
-        {% for g in config.group %}
-        <div class="list-item" style="flex-wrap:wrap;gap:6px;">
-          <input type="text" class="form-control" name="group" value="{{ g }}" placeholder="群聊名称">
-          <select class="form-select group-prompt-select" style="width:145px;flex-shrink:0;" title="该群专属Prompt（空=使用全局Prompt）">
-            <option value="">默认（全局）</option>
-            {% for p in prompts %}
-            <option value="{{ p.name }}" {% if config.group_prompt_map.get(g) == p.name %}selected{% endif %}>{{ p.name }}</option>
-            {% endfor %}
-          </select>
-          <select class="form-select group-api-select" style="width:160px;flex-shrink:0;" title="该群调用的AI接口（选默认则跟随全局配置）">
-            <option value="-1" {% if config.group_api_map.get(g) is none or config.group_api_map.get(g) == -1 %}selected{% endif %}>默认接口</option>
-            {% for cfg in config.api_configs %}
-            <option value="{{ loop.index0 }}" {% if config.group_api_map.get(g) == loop.index0 %}selected{% endif %}>接口{{ loop.index }}: {{ cfg.model }}</option>
-            {% endfor %}
-          </select>
-          <label class="group-ai-decide-label" style="display:flex;align-items:center;gap:4px;flex-shrink:0;font-size:12.5px;white-space:nowrap;" title="每条消息都交给 AI，由接口判断接不接（需要自建网关配置 auto_reply）">
-            <input type="checkbox" class="form-check-input group-ai-decide-check" style="margin:0;" {% if g in config.get('group_ai_decide', []) %}checked{% endif %}>AI 判断接话
-          </label>
-          <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
-        </div>
-        {% endfor %}
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        <button type="button" class="btn-add" id="btn-refresh-wechat-groups" style="margin:0;"><i class="bi bi-arrow-repeat"></i> 从微信读取群列表</button>
+        <span class="cfg-hint" id="wechat-groups-status" style="margin:0;"></span>
       </div>
+      <datalist id="wx-group-datalist"></datalist>
+      <datalist id="wx-member-datalist"></datalist>
+      <div id="group_container"></div>
       <button type="button" class="btn-add" id="btn-add-group-item"><i class="bi bi-plus-circle"></i> 添加群组</button>
-      <hr>
-      <label class="cfg-label">群聊发言人专属 Prompt</label>
-      <div class="cfg-hint" style="margin-bottom:10px;">
-        同一个群里给指定的人换 Prompt，优先级高于上面的群组 Prompt；没配的人仍用群组 Prompt。<br>
-        发言人填群里显示的名字（好友显示备注，非好友显示群昵称）。对方改名后需要在这里同步修改。
-      </div>
-      <div id="group_sender_prompt_container">
-        {% for g, senders in config.group_sender_prompt_map.items() %}
-        {% for s, pname in senders.items() %}
-        <div class="list-item group-sender-prompt-item" style="flex-wrap:wrap;gap:6px;">
-          <input type="text" class="form-control gsp-group" value="{{ g }}" placeholder="群聊名称">
-          <input type="text" class="form-control gsp-sender" value="{{ s }}" placeholder="发言人显示名">
-          <select class="form-select group-sender-prompt-select" style="width:145px;flex-shrink:0;" title="该发言人使用的Prompt">
-            <option value="">默认（全局）</option>
-            {% for p in prompts %}
-            <option value="{{ p.name }}" {% if pname == p.name %}selected{% endif %}>{{ p.name }}</option>
-            {% endfor %}
-          </select>
-          <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
-        </div>
-        {% endfor %}
-        {% endfor %}
-      </div>
-      <button type="button" class="btn-add" id="btn-add-group-sender-prompt"><i class="bi bi-plus-circle"></i> 添加发言人</button>
       <hr>
       <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:6px;">
         <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
@@ -2006,6 +1967,13 @@ window.__FORCE_REMOTE_ADMIN_CHANGE__ = {{ force_admin_change_required | default(
 window.__REMOTE_CONNECT_BLOCK_REQUIRED__ = {{ remote_connect_block_required | default(false) | tojson }};
 window.__API_CONFIGS__ = {{ config.api_configs | tojson }};
 window.__PROMPTS__ = {{ prompts | map(attribute='name') | list | tojson }};
+window.__GROUP_CFG__ = {
+  group: {{ config.group | tojson }},
+  group_prompt_map: {{ config.group_prompt_map | tojson }},
+  group_api_map: {{ config.group_api_map | tojson }},
+  group_ai_decide: {{ config.get('group_ai_decide', []) | tojson }},
+  group_sender_prompt_map: {{ config.group_sender_prompt_map | tojson }}
+};
 window.withBase = function(path){
   var base = window.__BASE_PATH__ || '';
   if(!path) return base || '';

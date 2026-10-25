@@ -74,6 +74,7 @@ from memory_store import (
     get_memory_manager,
     is_internal_dir_name,
     long_path,
+    read_json_file,
     read_original_name,
 )
 from logger import log
@@ -1959,6 +1960,79 @@ def _safe_is_dir(parent_abs, name):
         return _stat.S_ISDIR(os.stat(p).st_mode)
     except OSError:
         return False
+
+
+WECHAT_GROUPS_FILE = os.path.join(base_dir(), 'config', 'wechat_groups.json')
+
+
+def _memory_group_candidates(configured_groups):
+    """从记忆里找群和群成员：配置里的群，或有 2 个以上不同发言人的会话算群。
+
+    成员按最近发言排序（最近的在前），不含机器人自己。只读记忆文件，不碰微信界面。
+    :return: (群名列表, {群名: [成员名, ...]})
+    """
+    groups, members = [], {}
+    for wx_id in _memory_wx_ids():
+        manager = _memory_manager(wx_id)
+        for raw_name in manager.list_storage_keys():
+            storage_key = manager.resolve_storage_key(raw_name)
+            chat_path = os.path.join(MEMORY_BASE, wx_id, storage_key)
+            if not _safe_is_dir(os.path.abspath(os.path.join(MEMORY_BASE, wx_id)), storage_key):
+                continue
+            name = _memory_read_original_name(chat_path, storage_key)
+            seen = []
+            for m in reversed(manager.get_messages(name, count=manager.MEMORY_READ_LIMIT) or []):
+                sender = str(m.get('sender', '')).strip()
+                if m.get('attr') == 'self' or not sender or sender in seen:
+                    continue
+                seen.append(sender)
+            if name in configured_groups or len(seen) >= 2:
+                if name not in groups:
+                    groups.append(name)
+                merged = members.setdefault(name, [])
+                merged.extend(s for s in seen if s not in merged)
+    return groups, members
+
+
+@app.route('/group_candidates')
+@login_required
+def group_candidates():
+    """面板群组卡片的下拉候选：群名（配置 + 记忆 + 上次从微信读到的）和各群发言人（来自记忆）。"""
+    try:
+        config = read_config() or {}
+        configured = [str(g) for g in (config.get('group') or [])]
+        memory_groups, members = _memory_group_candidates(set(configured))
+        cached = read_json_file(WECHAT_GROUPS_FILE, {}) or {}
+        wechat_groups = [str(g) for g in (cached.get('groups') or [])]
+        groups = []
+        for g in configured + wechat_groups + memory_groups:
+            if g and g not in groups:
+                groups.append(g)
+        return jsonify({'status': 'success', 'groups': groups, 'members': members,
+                        'wechat_groups_time': cached.get('time', '')})
+    except Exception as e:
+        log('ERROR', f'读取群组候选失败: {e}')
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/wechat_groups/refresh', methods=['POST'])
+@login_required
+def wechat_groups_refresh():
+    """请运行中的机器人从微信读取最近群聊列表，并缓存到 config/wechat_groups.json。"""
+    bot = BOT_LIFECYCLE.bot
+    if bot is None or not BOT_LIFECYCLE.is_running():
+        return jsonify({'status': 'error', 'message': '机器人未运行，启动后才能从微信读取群列表'})
+    try:
+        names = bot.request_recent_groups()
+    except Exception as e:
+        log('WARNING', f'从微信读取群列表失败: {e}')
+        return jsonify({'status': 'error', 'message': str(e)})
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        _write_json_atomic(WECHAT_GROUPS_FILE, {'groups': names, 'time': now})
+    except Exception as e:
+        log('WARNING', f'缓存微信群列表失败: {e}')
+    return jsonify({'status': 'success', 'groups': names, 'time': now})
 
 
 @app.route('/memory/list')
