@@ -151,10 +151,14 @@ def _mention_stats(conn, place_ids):
     stats = {}
     if not place_ids:
         return stats
-    marks = ",".join("?" * len(place_ids))
-    rows = conn.execute(
-        f"SELECT * FROM mentions WHERE place_id IN ({marks}) ORDER BY said_at DESC, id DESC", list(place_ids)
-    ).fetchall()
+    ids = list(place_ids)
+    rows = []
+    for i in range(0, len(ids), 500):  # 底库有上万家店，分批查，避开 SQLite 参数个数上限
+        chunk = ids[i:i + 500]
+        rows += conn.execute(
+            f"SELECT * FROM mentions WHERE place_id IN ({','.join('?' * len(chunk))})", chunk
+        ).fetchall()
+    rows.sort(key=lambda m: (m["said_at"] or 0, m["id"]), reverse=True)
     for m in rows:
         s = stats.setdefault(m["place_id"], {"good": 0, "bad": 0, "went": set(), "want": set(), "total": 0, "tags": [], "quotes": []})
         s["total"] += 1
@@ -487,13 +491,14 @@ def record_mention(
 
 
 @server.tool()
-def recommend(keyword: str = "", near: str = "", max_km: float = 0, max_cost: float = 0, limit: int = 5) -> str:
-    """按条件从店库里挑店推荐，群友口碑优先：有人推荐过的排前面，有人踩雷的往后放，
-    其次看高德评分和距离。结果带距离、口碑摘要、群友原话和高德链接。
+def recommend(keyword: str = "", near: str = "", max_km: float = 3, max_cost: float = 0, limit: int = 5) -> str:
+    """按条件从店库里挑店推荐，群友口碑优先：有人推荐过的排前面，有人踩雷的排到没人评价过的店后面，
+    口碑相同时由近到远（高德评分几乎家家都有，分不出好坏，只作参考）。
+    结果带距离、口碑摘要、群友原话和高德链接。
 
     keyword: 分类或口味关键词，例如「火锅」「面」「咖啡」「烧烤」，也会匹配群友口碑里的要点；不限就留空
     near: 从哪出发，留空表示云谷中心；也可以是地点名，例如「西溪印象城」
-    max_km: 最远多少公里，0 表示不限
+    max_km: 最远多少公里，默认 3；群友说「开车」「远点也行」可以放到 7，0 表示不限
     max_cost: 人均上限（元），0 表示不限
     limit: 推荐几家，默认 5
     """
@@ -526,11 +531,10 @@ def recommend(keyword: str = "", near: str = "", max_km: float = 0, max_cost: fl
     def rank(item):
         d, r = item
         s = stats.get(r["id"])
-        rating = _num(r["rating"]) or 3.0
         mouth = (s["good"] * 3 - s["bad"] * 4 + s["total"] * 0.5) if s else 0
-        return mouth + rating - d * 0.4
+        return (-mouth, d)
 
-    hits.sort(key=rank, reverse=True)
+    hits.sort(key=rank)
     hits = hits[: max(1, min(int(limit), 10))]
     if not hits:
         return "店库里没有符合条件的店，可以放宽距离、人均或换个关键词"

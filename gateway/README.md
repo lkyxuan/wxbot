@@ -60,7 +60,7 @@
    `"ai_reply_image_dirs": ["D:\\SiverWXbot_plus\\gateway\\data\\images"]`（换成实际路径）。机器人只会发送这个目录里的图片，没配置就不发图。
 6. 群友打卡：「@机器人 打卡 店名 4分 毛肚好吃」，记一条带分数的口碑。平时聊天里的评价在旁听模式下自动记，不出声。
 
-工具：`find_place`（先查店库，没有再搜高德）、`save_place`（入库）、`record_mention`（记口碑，同一条消息不重复记）、`recommend`（按口味、距离、人均挑店，口碑优先）、`place_detail`、`who_wants`（谁想去、谁去过）、`nearby_places`（默认云谷中心）、`search_places`、`place_map_link`、`place_images`、`delete_place`。
+工具：`find_place`（先查店库，没有再搜高德）、`save_place`（入库）、`record_mention`（记口碑，同一条消息不重复记）、`recommend`（按口味、距离、人均挑店，口碑优先，其次由近到远，默认 3 公里内）、`place_detail`、`who_wants`（谁想去、谁去过）、`nearby_places`（默认云谷中心）、`search_places`、`place_map_link`、`place_images`、`delete_place`。
 
 
 ### 美食底库（云谷周边）
