@@ -53,7 +53,7 @@
         "silent_on_labels": [
           "review"
         ],
-        "cooldown_seconds": 600
+        "cooldown_seconds": 0
       }
     }
   }
