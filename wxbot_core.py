@@ -3825,7 +3825,8 @@ class WXBot:
                                 log("WARNING", "消息自动语音转文字失败")
                 except Exception as e:
                     log(level="ERROR", message=f"message_handle_callback下载图片出错,请尝试将windows设置屏幕缩放设置为100%后再尝试: {e}")
-                if (not _is_group and self.config.channels_video_switch
+                if (not _is_group and getattr(chat, 'chat_type', '') != 'group'
+                        and self.config.channels_video_switch
                         and channels_video.is_channels_card(msg)):
                     msg.content = channels_video.capture(msg, self.config.wx_channel_api)
                 # 统计已接收消息数

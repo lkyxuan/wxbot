@@ -63,13 +63,20 @@ def _record_time(record):
     return 0.0
 
 
-def pick_record(records, author, since):
-    """在浏览记录里找点开后才出现的、作者对得上的那条。
+def snapshot(records):
+    """点开前已有的浏览记录：{视频ID: 播放时间}。"""
+    return {r.get("id"): _record_time(r) for r in records}
 
-    侧边栏会自动连播下一条，所以同一时间段可能有多条：取作者匹配的、时间最早的一条。
-    同一条视频以前看过的话，记录会被更新（browseTime 变新），同样能找到。
+
+def pick_record(records, author, before):
+    """在浏览记录里找点开后才新增或更新的、作者对得上的那条。
+
+    before 是点开前的快照：点开之前就有、时间也没变的记录（比如刚看过同一作者的另一条）不算。
+    同一条视频以前看过的话，记录会被更新（播放时间变新），同样能找到。
+    侧边栏会自动连播下一条，所以可能有多条新记录：取作者匹配的、时间最早的一条。
     """
-    fresh = [r for r in records if _record_time(r) >= since]
+    fresh = [r for r in records
+             if r.get("id") not in before or _record_time(r) > before[r.get("id")]]
     matched = [r for r in fresh if author and author == (r.get("author") or "").strip()]
     if not matched:
         matched = [r for r in fresh if author and author in (r.get("author") or "")]
@@ -142,8 +149,11 @@ def describe(record):
 def capture(msg, api):
     """点开视频号卡片，返回改写后的消息内容；失败时返回说明文字（仍交给 AI，由它告诉用户）。"""
     author = _author_of(msg)
-    # 允许几秒钟的时钟误差：wx_channel 和机器人在同一台电脑上，记录时间不会差太多
-    since = time.time() - 3
+    try:
+        before = snapshot(_browse_records(api))
+    except Exception as e:
+        log("WARNING", f"读取 wx_channel 浏览记录失败（它可能没在运行）：{e}")
+        return f"[分享了一条视频号视频] 作者：{author}（没能读取这条视频，wx_channel 没在运行）"
     try:
         msg.click()
     except Exception as e:
@@ -157,7 +167,7 @@ def capture(msg, api):
         while time.time() < deadline:
             time.sleep(POLL_INTERVAL)
             try:
-                record = pick_record(_browse_records(api), author, since)
+                record = pick_record(_browse_records(api), author, before)
             except Exception as e:
                 error = e
                 continue
