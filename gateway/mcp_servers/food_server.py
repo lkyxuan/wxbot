@@ -13,6 +13,7 @@
 - 大众点评：没有个人可用的开放接口，网页反爬严格，这里不抓点评页面，
   只用卡片标题里的店名去高德搜。
 - 店铺都给高德链接（uri.amap.com），手机点开唤起高德 App，不自建网页。
+- 食堂档口：高德上没有，用 save_stall 手工录入（origin = 食堂档口），坐标用食堂的位置。
 
 环境变量：
     AMAP_KEY       高德开放平台「Web 服务」类型的 Key（必填）
@@ -54,6 +55,8 @@ MENTION_KINDS = ("推荐", "踩雷", "一般", "去过", "想去", "分享")
 # 群友评分：没报分数的评价按语气折算
 KIND_SCORE = {"推荐": 4, "一般": 3, "踩雷": 2}
 OPEN = "COALESCE(p.status, '') != '疑似关店'"
+STALL_ORIGIN = "食堂档口"
+STALL_CATEGORY = "餐饮服务;中餐厅;食堂档口"
 
 server = MCPServer("food")
 
@@ -92,7 +95,7 @@ def _db():
         ("distance_m", "REAL"),            # 距云谷中心的直线距离（米）
         ("open_time", "TEXT"),             # 营业时间
         ("dianping_url", "TEXT"),
-        ("origin", "TEXT"),                # 底库扫描 / 群友分享
+        ("origin", "TEXT"),                # 底库扫描 / 群友分享 / 食堂档口
         ("status", "TEXT DEFAULT '营业中'"),  # 营业中 / 疑似关店
         ("miss_count", "INTEGER DEFAULT 0"),  # 底库更新时连续几次没搜到
         ("refreshed_at", "INTEGER"),       # 最近一次从高德更新的时间
@@ -520,6 +523,92 @@ def record_mention(
     score_text = f" {int(score)}分" if 1 <= int(score or 0) <= 5 else ""
     now = f"；现在群友评分{s['score']}（{s['raters']}人评）" if s and s["raters"] else ""
     return f"已记录：{sender.strip()} 对 #{row['id']} {row['name']}：{kind}{score_text}" + (f"（{tags}）" if tags else "") + now
+
+
+def _canteen_location(conn, canteen):
+    """食堂坐标：第一次用高德查一次存进 meta；查不到或离云谷中心超过 3 公里（多半搜错了）就用云谷中心。"""
+    key = f"canteen:{canteen}"
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    if row:
+        lng, lat = row["value"].split(",")[:2]
+        return float(lng), float(lat)
+    lng0, lat0, _ = _center(conn)
+    try:
+        c = _locate(f"杭州{canteen}")
+    except (RuntimeError, requests.RequestException):
+        c = None
+    if not c or _dist_km(lng0, lat0, c[0], c[1]) > 3:
+        c = (lng0, lat0)
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, f"{c[0]},{c[1]}"))
+    return c
+
+
+@server.tool()
+def save_stall(
+    name: str,
+    canteen: str = "云谷食堂",
+    position: str = "",
+    dishes: str = "",
+    price: float = 0,
+    open_time: str = "",
+    note: str = "",
+    added_by: str = "",
+) -> str:
+    """录入或更新一个食堂档口（高德上没有，不用 find_place / save_place）。同一食堂同名档口只有一条，再录就更新，
+    只改传了的字段。录入后和普通店一样有编号，可以 recommend、record_mention、place_detail。
+
+    name: 档口名，例如「猪脚饭」「兰州拉面」
+    canteen: 哪个食堂，默认「云谷食堂」
+    position: 档口位置，例如「2楼 5号窗口」，可选
+    dishes: 招牌菜和价格，逗号分隔，例如「招牌猪脚饭18,卤蛋+2」，可选
+    price: 一顿大概多少钱（元），用作人均，可选
+    open_time: 营业时间，例如「11:00-13:30」，可选
+    note: 其它要说的，例如「要排队」「只有午饭」，可选
+    added_by: 谁报的（群昵称），可选
+    """
+    name, canteen = name.strip(), (canteen.strip() or "云谷食堂")
+    if not name:
+        return "档口名不能为空"
+    full = f"{name}（{canteen}）"
+    notes = "；".join(x for x in (f"招牌：{dishes.strip()}" if dishes.strip() else "", note.strip()) if x)
+    fields = {
+        "address": " ".join(x for x in (canteen, position.strip()) if x) if position.strip() else "",
+        "cost": f"{price:g}" if price and float(price) > 0 else "",
+        "open_time": open_time.strip(),
+        "note": notes,
+        "added_by": added_by.strip(),
+    }
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM places WHERE origin = ? AND name = ?", (STALL_ORIGIN, full)).fetchone()
+        if row:
+            # 备注是「招牌：…；其它」，只传了其中一半时保留另一半
+            old = (row["note"] or "").split("；", 1) if (row["note"] or "").startswith("招牌：") else ["", row["note"] or ""]
+            old_dishes, old_note = old[0][len("招牌："):], old[1] if len(old) > 1 else ""
+            fields["note"] = "；".join(x for x in (
+                f"招牌：{dishes.strip() or old_dishes}" if (dishes.strip() or old_dishes) else "",
+                note.strip() or old_note,
+            ) if x)
+            sets = {k: v for k, v in fields.items() if v}
+            if sets:
+                conn.execute(
+                    f"UPDATE places SET {', '.join(f'{k} = :{k}' for k in sets)} WHERE id = :id", {**sets, "id": row["id"]}
+                )
+            head = "已更新："
+        else:
+            lng, lat = _canteen_location(conn, canteen)
+            lng0, lat0, _ = _center(conn)
+            cur = conn.execute(
+                """INSERT INTO places (name, city, address, lng, lat, category, cost, open_time, note, added_by,
+                                       source, origin, status, distance_m, created_at)
+                   VALUES (?, '杭州市', ?, ?, ?, ?, ?, ?, ?, ?, '手工录入', ?, '营业中', ?, ?)""",
+                (full, fields["address"] or canteen, lng, lat, STALL_CATEGORY, fields["cost"], fields["open_time"],
+                 fields["note"], fields["added_by"], STALL_ORIGIN, round(_dist_km(lng0, lat0, lng, lat) * 1000),
+                 int(time.time())),
+            )
+            row = {"id": cur.lastrowid}
+            head = "已录入："
+        row = conn.execute("SELECT * FROM places WHERE id = ?", (row["id"],)).fetchone()
+    return head + _place_line(row)
 
 
 @server.tool()
