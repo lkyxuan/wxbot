@@ -57,6 +57,20 @@
         "chat_when": "群友在闲聊（不是在问吃的），聊的话题你能自然、轻松地接一句，比如吃喝、天气、周末去哪、群里的趣事；单纯打招呼、表情、和你无关的私事不算",
         "chat_cooldown_seconds": 60
       }
+    },
+    "yungu-fitness": {
+      "prompt_file": "agents/yungu-fitness.md",
+      "mcp": [],
+      "max_tool_rounds": 3,
+      "use_client_prompt": true,
+      "auto_reply": {
+        "judge_llm": {},
+        "context_messages": 8,
+        "reply_when": "有人问健身、跑步、减肥减脂、饮食热量、拉伸恢复、作息睡眠这类问题，或向教练求建议、求计划；有人打卡、晒今天练了什么、跑了多少、体重变化；有人说没动力、想放弃、偷懒了、吃多了需要打气",
+        "cooldown_seconds": 0,
+        "chat_when": "群友在闲聊，话题你能自然、轻松地接一句，比如运动、户外、天气、周末安排、吃喝、身体状态、群里的趣事；单纯打招呼、表情、和你无关的私事不算",
+        "chat_cooldown_seconds": 60
+      }
     }
   }
 }
