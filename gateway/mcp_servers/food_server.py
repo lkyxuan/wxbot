@@ -129,6 +129,11 @@ def _db():
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_mentions_msg ON mentions(msg_key, place_id) "
         "WHERE msg_key IS NOT NULL AND msg_key != ''"
     )
+    # 旧规则下「一般 3 分」「踩雷 2 分」在新星级里会变成好评，一次性降成 1 星（还行）
+    if not conn.execute("SELECT 1 FROM meta WHERE key = 'star_scale_v2'").fetchone():
+        conn.execute("UPDATE mentions SET score = 1 WHERE kind IN ('一般', '踩雷') AND score > 1")
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('star_scale_v2', '1')")
+        conn.commit()
     return conn
 
 
