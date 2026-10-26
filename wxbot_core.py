@@ -76,6 +76,7 @@ from wxautox4.utils.useful import check_license
 # 本地模块导入
 # ============================================================
 import email_send
+import channels_video
 import webhook_send
 from logger import log
 # 原子写与"读-改-写"事务统一由 config_store 提供（零 Flask 依赖）。
@@ -588,6 +589,10 @@ class WXBotConfig:
         self.group_welcome_random = 1.0 # 群新人欢迎语触发概率（0.0~1.0）
         self.group_welcome_msg = "欢迎新朋友！请先查看群公告！"
 
+        # ---------- 视频号卡片 ----------
+        self.channels_video_switch = False            # 私聊收到视频号卡片时点开，经 wx_channel 拿到视频信息再交给 AI
+        self.wx_channel_api = "http://127.0.0.1:2026" # wx_channel 的 HTTP 接口
+
         # ---------- 新好友配置 ----------
         self.new_friend_switch = False        # 自动通过新好友开关
         self.new_friend_reply_switch = False   # 新好友自动回复开关
@@ -1004,6 +1009,10 @@ class WXBotConfig:
         self.clean_ai_reply_switch = bool(self.config.get('clean_ai_reply_switch', True))
         self.api_chat_meta_headers = bool(self.config.get('api_chat_meta_headers', False))
         self.ai_reply_image_dirs = [str(d) for d in (self.config.get('ai_reply_image_dirs') or []) if str(d).strip()]
+
+        # --- 视频号卡片 ---
+        self.channels_video_switch = bool(self.config.get('channels_video_switch', False))
+        self.wx_channel_api = str(self.config.get('wx_channel_api') or 'http://127.0.0.1:2026').strip()
 
         # --- 图片识别配置 ---
         self.chat_image_recognition_switch  = bool(self.config.get('chat_image_recognition_switch', False))
@@ -3816,6 +3825,9 @@ class WXBot:
                                 log("WARNING", "消息自动语音转文字失败")
                 except Exception as e:
                     log(level="ERROR", message=f"message_handle_callback下载图片出错,请尝试将windows设置屏幕缩放设置为100%后再尝试: {e}")
+                if (not _is_group and self.config.channels_video_switch
+                        and channels_video.is_channels_card(msg)):
+                    msg.content = channels_video.capture(msg, self.config.wx_channel_api)
                 # 统计已接收消息数
                 self.msg_received_count += 1
                 self.last_msg_time   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -5754,6 +5766,9 @@ class WXBot:
                                     log("WARNING", "消息自动语音转文字失败")
                     except Exception as e:
                         log(level="ERROR", message=f"Next_callback下载图片出错，请尝试将windows屏幕设置的缩放调整为100%后重试: {e}")
+                    # 视频号卡片要在主窗口里点开（此时会话正打开在主窗口），结果按消息 id 暂存，下面统一改写
+                    if self.config.channels_video_switch and channels_video.is_channels_card(msg):
+                        Next_callback_down_map[msg.id] = channels_video.capture(msg, self.config.wx_channel_api)
                 else:
                     log('INFO', '私聊全局监听收到群聊消息，跳过')
 
@@ -5776,6 +5791,9 @@ class WXBot:
                         if msg.id in Next_callback_down_map:
                             msg.content = msg.content+"+引用的图片:"+str(Next_callback_down_map[msg.id])
                     elif msg.type == 'voice':
+                        if msg.id in Next_callback_down_map:
+                            msg.content = str(Next_callback_down_map[msg.id])
+                    elif msg.type == 'other':
                         if msg.id in Next_callback_down_map:
                             msg.content = str(Next_callback_down_map[msg.id])
                     # 仅处理 friend 类型的私聊消息，排除群聊

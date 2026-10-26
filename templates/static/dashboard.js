@@ -1589,6 +1589,8 @@ $(function(){
       reply_delay_min:Math.max(1,parseInt($('#reply_delay_min').val())||1),
       reply_delay_max:Math.max(1,parseInt($('#reply_delay_max').val())||5),
       chat_image_recognition_switch:$('#chat_image_recognition_switch').is(':checked'),
+      channels_video_switch:$('#channels_video_switch').is(':checked'),
+      wx_channel_api:$('#wx_channel_api').val(),
       chat_image_recognition_api:parseInt($('#chat_image_recognition_api').val())||0,
       group_image_recognition_switch:$('#group_image_recognition_switch').is(':checked'),
       group_image_recognition_api:parseInt($('#group_image_recognition_api').val())||0,
