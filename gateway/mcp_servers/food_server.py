@@ -52,8 +52,13 @@ AMAP_HOSTS = ("amap.com", "autonavi.com")
 DEFAULT_CENTER = (120.040246, 30.315336, "云谷中心")
 
 MENTION_KINDS = ("推荐", "踩雷", "一般", "去过", "想去", "分享")
-# 群友评分：没报分数的评价按语气折算
-KIND_SCORE = {"推荐": 4, "一般": 3, "踩雷": 2}
+# 群友评分（星）：群里自己定的规则
+#   1 星 还行，早知道在家吃泡面了    2 星 好吃，有点远，下次不来了    3 星 推荐，怎么之前没发现
+#   4 星 权威，下次喊几个朋友来      5 星 香到睡不着，看看几点了，还开着门吗
+# 没报星的评价按语气折算
+KIND_SCORE = {"推荐": 3, "一般": 1, "踩雷": 1}
+STAR_MEANING = {1: "还行，早知道在家吃泡面了", 2: "好吃，有点远，下次不来了", 3: "推荐，怎么之前没发现",
+                4: "权威，下次喊几个朋友来", 5: "香到睡不着，看看几点了，还开着门吗"}
 OPEN = "COALESCE(p.status, '') != '疑似关店'"
 STALL_ORIGIN = "食堂档口"
 STALL_CATEGORY = "餐饮服务;中餐厅;食堂档口"
@@ -174,9 +179,9 @@ def _mention_stats(conn, place_ids):
         if personal:
             # 按时间倒序，第一次遇到的就是这个人最新的评价；没署名的每条单独算
             latest.setdefault((m["place_id"], m["sender"] or f"#{m['id']}"), personal)
-        if m["kind"] == "推荐" or score >= 4:
+        if m["kind"] == "推荐" or score >= 3:
             s["good"] += 1
-        elif m["kind"] == "踩雷" or (score and score <= 2):
+        elif m["kind"] == "踩雷" or score == 1:
             s["bad"] += 1
         if m["sender"]:
             if m["kind"] == "想去":
@@ -200,6 +205,11 @@ def _mention_stats(conn, place_ids):
     return stats
 
 
+def _star_text(score):
+    """星数对应的群里说法，按最接近的一档。"""
+    return STAR_MEANING[min(5, max(1, int(score + 0.5)))]
+
+
 def _stats_text(s):
     if not s:
         return ""
@@ -207,7 +217,7 @@ def _stats_text(s):
     counts = [f"推荐{s['good']}" if s["good"] else "", f"踩雷{s['bad']}" if s["bad"] else ""]
     counts = "、".join(c for c in counts if c)
     if s["raters"]:
-        parts.append(f"群友评分{s['score']}（{s['raters']}人评" + (f"，{counts}" if counts else "") + "）")
+        parts.append(f"群友{s['score']}星（{s['raters']}人评" + (f"，{counts}" if counts else "") + f"）「{_star_text(s['score'])}」")
     else:
         parts.append("群友口碑：" + (counts or f"提到{s['total']}次"))
     if s["tags"]:
@@ -503,7 +513,8 @@ def record_mention(
     kind: 推荐 / 踩雷 / 一般 / 去过 / 想去 / 分享 之一。转述别人、自己没去过的记「想去」
     quote: 原话，尽量保留原文，推荐时会引用
     tags: 要点，逗号分隔，例如「毛肚好吃,排队久,适合聚餐」
-    score: 1～5 分，只有打卡指令或原话里明确给了分才填，否则填 0
+    score: 1～5 星，按群里的规则：1 还行（早知道在家吃泡面了）、2 好吃但有点远下次不来了、3 推荐（怎么之前没发现）、
+        4 权威（下次喊几个朋友来）、5 香到睡不着（看看几点了还开着门吗）。报了星、或原话明显对上某一档才填，否则填 0
     via: 自动抽取 / 打卡指令 / 分享卡片
     msg_key: 消息标识（旁听时系统提示里给的），用于去重
     said_at: 消息时间，例如「2026-10-25 12:01:02」，不填就用现在
@@ -521,7 +532,7 @@ def record_mention(
             return f"这条消息已经给 {row['name']} 记过了"
         s = _mention_stats(conn, [row["id"]]).get(row["id"])
     score_text = f" {int(score)}分" if 1 <= int(score or 0) <= 5 else ""
-    now = f"；现在群友评分{s['score']}（{s['raters']}人评）" if s and s["raters"] else ""
+    now = f"；现在群友{s['score']}星（{s['raters']}人评）「{_star_text(s['score'])}」" if s and s["raters"] else ""
     return f"已记录：{sender.strip()} 对 #{row['id']} {row['name']}：{kind}{score_text}" + (f"（{tags}）" if tags else "") + now
 
 
@@ -613,8 +624,8 @@ def save_stall(
 
 @server.tool()
 def recommend(keyword: str = "", near: str = "", max_km: float = 3, max_cost: float = 0, limit: int = 5) -> str:
-    """按条件从店库里挑店推荐，群友评分优先：群友评 3 分及以上的按评分排前面，没人评过的按距离由近到远，
-    群友评分低于 3 的排最后（高德评分几乎家家都有，分不出好坏，只作参考）。
+    """按条件从店库里挑店推荐，群友评分优先：群友评 2 星及以上的按星数排前面，没人评过的按距离由近到远，
+    群友评分低于 2 星的排最后（高德评分几乎家家都有，分不出好坏，只作参考）。
     结果带距离、口碑摘要、群友原话和高德链接。
 
     keyword: 分类或口味关键词，例如「火锅」「面」「咖啡」「烧烤」，也会匹配群友口碑里的要点；不限就留空
@@ -650,12 +661,12 @@ def recommend(keyword: str = "", near: str = "", max_km: float = 3, max_cost: fl
         stats = _mention_stats(conn, [r["id"] for _, r in hits])
 
     def rank(item):
-        # 群友评 3 分及以上的店按群友评分排最前；没人评过的按距离；群友评分低于 3 的排最后
+        # 群友评 2 星及以上的店按星数排最前；没人评过的按距离；低于 2 星的（还行、踩雷）排最后
         d, r = item
         s = stats.get(r["id"])
         if not s or not s["raters"]:
             return (1, 0, d)
-        return (0 if s["score"] >= 3 else 2, -s["score"], d)
+        return (0 if s["score"] >= 2 else 2, -s["score"], d)
 
     hits.sort(key=rank)
     hits = hits[: max(1, min(int(limit), 10))]
