@@ -19,6 +19,7 @@
     python refresh_base.py --radius 5000 --dry-run
     python refresh_base.py --radius 10000 --expand 5000 --expand-max 30000
                                                   # 只搜已覆盖半径外的一圈（10→15 公里），下次再往外 5 公里
+扩圈时一次没搜完（--max-calls 用完），已搜完的格子记在 meta 表的 expand_progress，下次接着搜剩下的格子。
 圆心第一次确定后存进数据库，之后一直用同一个点；要换就再传 --center 或 --center-name。
 已覆盖的半径记在 meta 表的 base_radius；--expand 从它往外扩，没记录时以 --radius 为已覆盖半径。
 用 Windows 计划任务定期运行（见 README「美食底库」）。
@@ -252,14 +253,23 @@ def main():
         return (d > inner or inner == 0) and d <= radius
 
     cells = grid((lng0, lat0), radius, args.cell, inner)
-    found, complete = {}, True
-    for i, rect in enumerate(cells, 1):
+    # 扩圈的断点：同一圈、同样的格子大小，跳过上次已经搜完的格子
+    progress_key = f"{inner},{radius},{args.cell}"
+    start = 0
+    if args.expand:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'expand_progress'").fetchone()
+        if row and row["value"].rsplit(",", 1)[0] == progress_key:
+            start = int(row["value"].rsplit(",", 1)[1])
+            log(f"接着上次的进度：这一圈 {len(cells)} 格已搜完 {start} 格")
+    found, complete, done = {}, True, start
+    for i, rect in enumerate(cells[start:], start + 1):
         try:
             pois, ok = search_cell(api, rect, 0, log)
         except (QuotaExceeded, RuntimeError, requests.RequestException, ValueError) as e:
             log(f"停止：{e}。已拉到的店照常入库，下次再补全")
             complete = False
             break
+        done = i
         complete = complete and ok
         for raw in pois:
             p = parse_v5(raw)
@@ -280,7 +290,16 @@ def main():
         )
         for p in found.values():
             new += upsert(conn, p, now)
-        if complete:
+        if args.expand:
+            if done < len(cells):
+                conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('expand_progress', ?)", (f"{progress_key},{done}",))
+            else:
+                conn.execute("DELETE FROM meta WHERE key = 'expand_progress'")
+        # 扩圈分几次搜完的，最后一次也算整圈搜完
+        whole = complete and (start == 0 or not args.expand)
+        if args.expand and complete and done == len(cells) and inner <= covered < radius:
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('base_radius', ?)", (str(radius),))
+        if whole:
             # 范围内、这次没搜到的底库店记一次缺席；连续两次就标疑似关店
             for r in conn.execute(
                 "SELECT id, poi_id, lng, lat, miss_count FROM places WHERE origin = '底库扫描' AND lng IS NOT NULL"
@@ -296,7 +315,7 @@ def main():
                 missed += 1
                 flagged += bool(status)
             # 这次搜的范围和已覆盖的连在一起，才更新已覆盖半径
-            if inner <= covered and radius > covered:
+            if inner <= covered < radius:
                 conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('base_radius', ?)", (str(radius),))
         # 所有有坐标的店（包括群友分享的）都重算到圆心的距离
         for r in conn.execute("SELECT id, lng, lat FROM places WHERE lng IS NOT NULL AND lat IS NOT NULL").fetchall():
@@ -305,9 +324,14 @@ def main():
 
     log(
         f"完成：{inner}～{radius} 米内 {len(found)} 家，新增 {new} 家，更新 {len(found) - new} 家；"
-        + (f"本次没搜到 {missed} 家，其中 {flagged} 家标为疑似关店；" if complete else "本次没拉完，跳过关店判断；")
+        + (f"本次没搜到 {missed} 家，其中 {flagged} 家标为疑似关店；" if whole else "本次没拉完或是接着上次搜的，跳过关店判断；")
         + f"调用高德 {api.calls} 次"
     )
+    if args.expand:
+        if complete and done == len(cells):
+            log(f"扩圈：{inner}～{radius} 米这一圈已搜完，已覆盖半径推到 {radius} 米")
+        else:
+            log(f"扩圈：{inner}～{radius} 米这一圈搜了 {done}/{len(cells)} 格，下次接着搜")
 
 
 if __name__ == "__main__":

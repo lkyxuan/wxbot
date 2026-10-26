@@ -74,14 +74,14 @@ set AMAP_KEY=你的 Key
 python refresh_base.py --dry-run     # 先试搜，看看有多少家、用了多少次高德
 python refresh_base.py               # 正式入库，默认半径 7000 米（云谷周边店少，范围放大）
 python refresh_base.py --center 120.02,30.28 --radius 5000   # 换圆心 / 半径
-python refresh_base.py --radius 10000 --expand 5000 --expand-max 30000 --max-calls 4000   # 往外扩一圈
+python refresh_base.py --radius 10000 --expand 5000 --expand-max 30000 --max-calls 900   # 往外扩圈，每次最多花 900 次
 ```
 
 - 圆心默认用高德在杭州搜「云谷中心」的第一个结果，第一次运行后存进数据库，之后一直用同一个点；要换就传 `--center 经度,纬度` 或 `--center-name 地名`。
 - 已有的店只更新高德字段（评分、人均、营业时间、电话、照片），群友的备注和推荐人不动；群友分享的店在半径内也会被刷新。
 - 这次没搜到的底库店记一次缺席，连续两次标为「疑似关店」，不删除，查询和推荐时不再出现。没拉完的一次（配额用完、报错）不做这个判断。
 - 高德一次查询能翻到的条数有上限，脚本把范围切成 1 公里的格子，某格结果满 200 条就四分再搜。实测 10 公里半径 17562 家店用了 1278 次搜索（约每家 0.07 次），`--max-calls`（默认 1500）防止意外用光配额。
-- 往外扩圈：`--expand 5000` 只搜「已覆盖半径」到「已覆盖半径 + 5 公里」之间的圆环，跑完整一圈后才把已覆盖半径（meta 表的 `base_radius`）往外推；没跑完下次重跑这一圈。到 `--expand-max` 后就不再扩。数据库里还没记已覆盖半径时，以 `--radius` 为准。
+- 往外扩圈：`--expand 5000` 只搜「已覆盖半径」到「已覆盖半径 + 5 公里」之间的圆环，跑完整一圈后才把已覆盖半径（meta 表的 `base_radius`）往外推；一次没搜完（`--max-calls` 用完）就把已搜完的格子记进 meta 表的 `expand_progress`，下次接着搜剩下的。所以可以每周固定花一点额度，例如 `--expand 5000 --max-calls 900`，慢慢往外扩。到 `--expand-max` 后就不再扩。数据库里还没记已覆盖半径时，以 `--radius` 为准。
 - 定期运行：建一个 PowerShell 启动脚本，运行时用 1Password CLI（`op read`）取 `AMAP_KEY`，再调用 `refresh_base.py`；用 Windows 计划任务按月或按年触发，例如
   `schtasks /create /tn "云谷美食底库" /tr "powershell -NoProfile -ExecutionPolicy Bypass -File D:\wxbot-tasks\refresh_base.ps1" /sc monthly /mo FIRST /d MON /st 03:00 /it`
 
