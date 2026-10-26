@@ -581,6 +581,13 @@ def save_stall(
     with _db() as conn:
         row = conn.execute("SELECT * FROM places WHERE origin = ? AND name = ?", (STALL_ORIGIN, full)).fetchone()
         if row:
+            # 备注是「招牌：…；其它」，只传了其中一半时保留另一半
+            old = (row["note"] or "").split("；", 1) if (row["note"] or "").startswith("招牌：") else ["", row["note"] or ""]
+            old_dishes, old_note = old[0][len("招牌："):], old[1] if len(old) > 1 else ""
+            fields["note"] = "；".join(x for x in (
+                f"招牌：{dishes.strip() or old_dishes}" if (dishes.strip() or old_dishes) else "",
+                note.strip() or old_note,
+            ) if x)
             sets = {k: v for k, v in fields.items() if v}
             if sets:
                 conn.execute(
