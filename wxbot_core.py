@@ -2811,13 +2811,38 @@ class WXBot:
         if len(self.all_Mode_listen_list) != before_count:
             log(level="WARNING", message=f"{chat} 动态监听子窗口校验失败，已从动态监听列表移除")
 
-    def _remove_listen_chat_verified(self, nickname):
-        """移除监听后用 GetAllSubWindow 校验子窗口是否已消失。"""
-        try:
-            self.wx.RemoveListenChat(nickname)
-        except Exception as e:
-            log(level="ERROR", message=f"{nickname} 删除监听失败: {e}")
+    def _close_subwindow(self, nickname):
+        """直接关闭指定会话的独立子窗口，返回是否调用成功。"""
+        sub_chat = self._get_verified_subwindow(nickname)
+        if not sub_chat:
             return False
+        close = getattr(sub_chat, 'Close', None)
+        if not callable(close):
+            log(level="WARNING", message=f"{nickname} 子窗口对象不支持 Close，无法直接关闭")
+            return False
+        try:
+            close()
+            return True
+        except Exception as e:
+            log(level="WARNING", message=f"{nickname} 直接关闭子窗口失败: {e}")
+            return False
+
+    def _remove_listen_chat_verified(self, nickname):
+        """
+        移除监听后用 GetAllSubWindow 校验子窗口是否已消失。
+
+        RemoveListenChat 只关闭 wxautox 自己登记过的监听窗口；登记已经丢失
+        （例如之前删除时窗口没关掉）或关闭失败时，子窗口会一直留着，
+        每次超时检查都会再报一次"校验失败"。因此校验不通过时再拿
+        GetSubWindow 取到窗口对象直接 Close 一次，然后重新校验。
+        """
+        try:
+            result = self.wx.RemoveListenChat(nickname)
+            # wxautox 返回 WxResponse，失败时为假值
+            if result is not None and not result:
+                log(level="WARNING", message=f"{nickname} RemoveListenChat 返回: {self._listen_add_error(result)}")
+        except Exception as e:
+            log(level="WARNING", message=f"{nickname} 删除监听出错: {e}")
 
         time.sleep(0.2)
         listened_names = self._try_get_all_subwindow_names()
@@ -2828,7 +2853,15 @@ class WXBot:
             log(message=f"{nickname} 删除监听校验通过")
             return True
 
-        log(level="ERROR", message=f"{nickname} 删除监听校验失败，子窗口仍存在，保留在动态监听列表")
+        log(level="WARNING", message=f"{nickname} 删除监听后子窗口仍存在，尝试直接关闭子窗口")
+        if self._close_subwindow(nickname):
+            time.sleep(0.5)
+            listened_names = self._try_get_all_subwindow_names()
+            if listened_names is not None and nickname not in listened_names:
+                log(message=f"{nickname} 子窗口已直接关闭，删除监听校验通过")
+                return True
+
+        log(level="ERROR", message=f"{nickname} 删除监听校验失败，子窗口仍存在，保留在动态监听列表，稍后再试")
         return False
 
     def init_wx_listeners(self):
@@ -5679,6 +5712,9 @@ class WXBot:
                     log(message=str(listen_chat[0]) + '对话超时，正在删除监听')
                     if self._remove_listen_chat_verified(listen_chat[0]):
                         self.all_Mode_listen_list.remove(listen_chat)
+                    else:
+                        # 删除失败时推迟到下一个超时周期再试，避免主循环每轮都重试刷屏
+                        listen_chat[1] = time.time()
 
         def get_next_new_message():
             """
