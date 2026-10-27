@@ -152,10 +152,13 @@ class MCPManager:
                 })
         return result, name_map
 
-    def call(self, server, tool, arguments, timeout=60):
+    def call(self, server, tool, arguments, timeout=None):
         session = self.sessions.get(server)
         if session is None:
             return f"工具不可用：{server}/{tool}"
+        if timeout is None:
+            # 下载视频、转文字这类慢工具可以在 mcp_servers 里单独配 tool_timeout（秒）
+            timeout = self.servers_cfg.get(server, {}).get("tool_timeout", 60)
         try:
             res = self._run(session.call_tool(tool, arguments), timeout)
         except Exception as e:

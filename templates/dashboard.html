@@ -799,6 +799,25 @@ html.icons-pref-local [class*=" bi-"]::before {
         <br><strong>语音识别：</strong>开启后会自动调用微信的语音消息转文字功能，仅能识别普通话。如果提示转文字失败，请在微信设置 → 通用 → 聊天中，将「语音消息自动转成文字」功能打开。
       </div>
       <hr>
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          <input class="form-check-input" type="checkbox" id="channels_video_switch"
+                 name="channels_video_switch"
+                 {% if config.get('channels_video_switch', False) %}checked{% endif %}>
+          <label for="channels_video_switch" style="font-weight:600;cursor:pointer;">私聊视频号卡片点开读取</label>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <label style="font-size:13px;white-space:nowrap;margin:0;">wx_channel 接口:</label>
+          <input type="text" class="form-control" id="wx_channel_api" name="wx_channel_api"
+                 value="{{ config.wx_channel_api }}" style="width:230px;">
+        </div>
+      </div>
+      <div style="padding:9px 14px;background:#f0f7ff;border:1px solid #bcd4f5;border-radius:6px;color:#1a5fa8;font-size:12.5px;line-height:1.8;">
+        <i class="bi bi-info-circle" style="color:#2d8cf0;margin-right:4px;"></i>
+        视频号卡片里只有作者名。开启后，私聊收到视频号卡片时机器人会点开它，由本机的 <strong>wx_channel</strong>（需以管理员身份运行，接口令牌设到环境变量 WX_CHANNEL_TOKEN）记下视频，
+        再关掉播放侧边栏，把「标题、作者、视频ID」交给 AI 接口。要总结视频内容，接口需选网关里带视频工具的智能体（见 gateway/README.md）。
+      </div>
+      <hr>
       <div class="switch-row">
         <input class="form-check-input" type="checkbox" id="chat_split_reply_switch"
                {% if config.get('chat_split_reply_switch', False) %}checked{% endif %}

@@ -2,3 +2,4 @@ flask
 openai
 requests
 mcp>=2,<3
+imageio-ffmpeg

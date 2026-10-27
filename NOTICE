@@ -12,3 +12,7 @@ v4.8.1（上游提交 5f2f773）二次开发，原作者 Siver（SiverKing），
   设置 SIVER_ALLOW_UPDATE_CHECK=1 可恢复；
 - 移除 siver_panel.py（经作者服务器中转面板的远程访问客户端）；
 - .gitignore：补充 .env、cacert.pem 等本地运行数据。
+
+gateway/mcp_servers/video_server.py 中的 ISAAC64 视频解密算法移植自
+wx_channel（https://github.com/nobiyou/wx_channel ，pkg/util/isaac64.go），
+Copyright (c) 2025 nobiyou，MIT License。
