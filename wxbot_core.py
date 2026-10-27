@@ -51,6 +51,7 @@ import base64
 import mimetypes
 import schedule                  # 定时任务库（此处只用 CancelJob 标记；调度器按实例创建）
 from openai import OpenAI        # OpenAI SDK
+from openai import APIConnectionError as _OpenAIConnectionError   # 含 APITimeoutError（其子类）
 
 # Coze 官方 Python 库
 from cozepy import (
@@ -383,6 +384,9 @@ AI_IMAGE_MARKER_RE = re.compile(r'^\s*\[图片\]\s*(.+?\.(?:png|jpe?g|gif|webp|b
 
 # AI 回复是这个标记时什么都不发（自建网关在「AI 判断接话」的群里判断不接话时返回它）
 AI_NO_REPLY_MARK = '<NO_REPLY>'
+
+# 机器人停止时放弃了进行中的 AI 请求（只在内部流转，见 WXBot._run_ai_call_until_stop）
+_AI_CALL_ABANDONED = object()
 
 
 def is_ai_no_reply(reply):
@@ -1515,8 +1519,9 @@ class OpenAIAPI:
         self.client = OpenAI(
             api_key=config.api_key,
             base_url=config.base_url,
-            timeout=180.0,  # 设置超时时间
-            max_retries=2,  # 设置重试次数
+            timeout=180.0,  # 设置超时时间（上游一次可能要 100~140 秒，不能再小）
+            # 只重试 1 次：原来 2 次，单次 180 秒超时 → 最坏 9 分钟，期间这条消息一直占着线程
+            max_retries=1,
             default_headers={
                 "User-Agent": "Mozilla/5.0",
                 "Accept": "*/*"
@@ -1624,6 +1629,10 @@ class OpenAIAPI:
             error_msg = str(e)
             error_type = type(e).__name__
             log(level="WARN", message=f"Chat Completions API 调用失败 [{error_type}]: {error_msg}")
+            if isinstance(e, _OpenAIConnectionError):
+                # 连不上 / 超时：备用方案打的是同一个地址，只会再白等一轮，直接判失败
+                log(level="WARN", message="连接失败或超时，不再尝试备用方案（同一地址）")
+                return API_ERROR_REPLY
             log(level="INFO", message="尝试备用方案（Responses API）")
             return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
 
@@ -2604,13 +2613,19 @@ class WXBot:
             chat_meta = None
 
         for attempt_number, (index, current_api) in enumerate(attempts):
+            if self.stop_requested():
+                log(level="WARNING", message="机器人正在停止，放弃本次 AI 调用，不回复")
+                return AI_NO_REPLY_MARK
             try:
                 if current_api is None:
                     current_api = self._get_api_instance_by_index(index)
                 call_kwargs = kwargs
                 if chat_meta and isinstance(current_api, OpenAIAPI):
                     call_kwargs = dict(kwargs, chat_meta=chat_meta)
-                reply = current_api.chat(message, **call_kwargs)
+                reply = self._run_ai_call_until_stop(current_api.chat, message, **call_kwargs)
+                if reply is _AI_CALL_ABANDONED:
+                    log(level="WARNING", message="机器人正在停止，已放弃进行中的 AI 请求，不回复")
+                    return AI_NO_REPLY_MARK
                 if reply and reply != API_ERROR_REPLY:
                     if attempt_number > 0:
                         log(message=f"备用接口 {index + 1} 调用成功")
@@ -2628,6 +2643,36 @@ class WXBot:
                 )
 
         return API_ERROR_REPLY
+
+    def _run_ai_call_until_stop(self, fn, *args, **kwargs):
+        """在后台线程里调 AI 接口，等结果的同时盯着停止信号。
+
+        上游一次回复可能要一两分钟（加上重试更久），以前这段时间里点「停止」，
+        主循环 / 监听回调都卡在这次调用里退不出来，StopListening 也等着它，
+        面板就一直「停止中」、再也启动不了。现在一收到停止信号就放弃等待：
+        返回 _AI_CALL_ABANDONED，调用方不回复；后台线程是守护线程，
+        结果到了也直接丢掉。
+
+        接口抛的异常原样抛给调用方（与直接调用时一致）。
+        """
+        done = threading.Event()
+        box = {}
+
+        def _call():
+            try:
+                box['reply'] = fn(*args, **kwargs)
+            except BaseException as e:     # noqa: BLE001 —— 交给调用方处理
+                box['error'] = e
+            finally:
+                done.set()
+
+        threading.Thread(target=_call, name='wxbot-ai-call', daemon=True).start()
+        while not done.wait(0.5):
+            if self.stop_requested():
+                return _AI_CALL_ABANDONED
+        if 'error' in box:
+            raise box['error']
+        return box.get('reply')
 
     def _get_group_api(self, group_name):
         """
@@ -3719,6 +3764,9 @@ class WXBot:
             # 先摘出再 flush：flush 期间新到的消息会新建缓冲，不会被这里连带清掉
             pending = [(k, self._merge_buffers.pop(k)) for k in ready]
         for key, entry in pending:
+            if self.stop_requested():
+                log(level="WARNING", message="[合并回复] 机器人正在停止，剩余缓冲不再回复")
+                break
             try:
                 self._flush_merged(key, entry)
             except Exception as e:
