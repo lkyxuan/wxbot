@@ -22,8 +22,9 @@
 | `config.example.json` | 配置模板，复制成 `config.json` 使用（`config.json` 不会提交到仓库） |
 | `agents/*.md` | 各智能体的提示词 |
 | `mcp_servers/crypto_server.py` | 示例产品：加密货币行情（CoinGecko 公共接口） |
+| `mcp_servers/video_server.py` | 视频号视频：从 wx_channel 取视频、解密、转文字，供私聊助手总结 |
 | `mcp_servers/food_server.py` | 云谷美食：店库（高德）+ 群友口碑，识别分享卡片、推荐、记口碑、组局、高德链接 |
-| `refresh_base.py` / `refresh_base.bat` | 美食底库：按圆心和半径从高德批量拉周边餐饮店，每周更新 |
+| `refresh_base.py` / `refresh_base.bat` | 美食底库：按圆心和半径从高德批量拉周边餐饮店，可往外扩圈、定期更新 |
 | `start_gateway.bat` | Windows 一键启动 |
 | `tests/` | 单元测试（`python -m pytest tests`，需另装 pytest） |
 
@@ -75,14 +76,16 @@ set AMAP_KEY=你的 Key
 python refresh_base.py --dry-run     # 先试搜，看看有多少家、用了多少次高德
 python refresh_base.py               # 正式入库，默认半径 7000 米（云谷周边店少，范围放大）
 python refresh_base.py --center 120.02,30.28 --radius 5000   # 换圆心 / 半径
+python refresh_base.py --radius 10000 --expand 5000 --expand-max 30000 --max-calls 900   # 往外扩圈，每次最多花 900 次
 ```
 
 - 圆心默认用高德在杭州搜「云谷中心」的第一个结果，第一次运行后存进数据库，之后一直用同一个点；要换就传 `--center 经度,纬度` 或 `--center-name 地名`。
 - 已有的店只更新高德字段（评分、人均、营业时间、电话、照片），群友的备注和推荐人不动；群友分享的店在半径内也会被刷新。
 - 这次没搜到的底库店记一次缺席，连续两次标为「疑似关店」，不删除，查询和推荐时不再出现。没拉完的一次（配额用完、报错）不做这个判断。
-- 高德一次查询能翻到的条数有上限，脚本把范围切成 1 公里的格子，某格结果满 200 条就四分再搜。7 公里半径估计一次几百次搜索，每周一次一个月一两千次，`--max-calls`（默认 1500）防止意外用光每月 5000 次的配额。
-- 每周更新：把 `AMAP_KEY` 设成系统环境变量，然后用计划任务每周一凌晨 3 点运行 `refresh_base.bat`（日志写到 `data/refresh_base.log`）：
-  `schtasks /create /tn "云谷美食底库" /tr "D:\SiverWXbot_plus\gateway\refresh_base.bat" /sc weekly /d MON /st 03:00`（换成实际路径）
+- 高德一次查询能翻到的条数有上限，脚本把范围切成 1 公里的格子，某格结果满 200 条就四分再搜。实测 10 公里半径 17562 家店用了 1278 次搜索（约每家 0.07 次），`--max-calls`（默认 1500）防止意外用光配额。
+- 往外扩圈：`--expand 5000` 只搜「已覆盖半径」到「已覆盖半径 + 5 公里」之间的圆环，跑完整一圈后才把已覆盖半径（meta 表的 `base_radius`）往外推；一次没搜完（`--max-calls` 用完）就把已搜完的格子记进 meta 表的 `expand_progress`，下次接着搜剩下的。所以可以每周固定花一点额度，例如 `--expand 5000 --max-calls 900`，慢慢往外扩。到 `--expand-max` 后就不再扩。数据库里还没记已覆盖半径时，以 `--radius` 为准。
+- 定期运行：建一个 PowerShell 启动脚本，运行时用 1Password CLI（`op read`）取 `AMAP_KEY`，再调用 `refresh_base.py`；用 Windows 计划任务按月或按年触发，例如
+  `schtasks /create /tn "云谷美食底库" /tr "powershell -NoProfile -ExecutionPolicy Bypass -File D:\wxbot-tasks\refresh_base.ps1" /sc monthly /mo FIRST /d MON /st 03:00 /it`
 
 识别方式：机器人读到的分享卡片只有卡片上的文字（标题、描述、来源），拿不到网址。AI 从标题里提取店名和城市，再用高德搜索得到地址、坐标、评分。内容里带高德店铺 ID（B0 开头）或高德链接时，会直接按 ID 精确查询。大众点评没有个人可用的开放接口，也不抓它的网页。
 
@@ -120,6 +123,26 @@ python refresh_base.py --center 120.02,30.28 --radius 5000   # 换圆心 / 半�
 ```
 
 网关日志里每条都记判断结果（接话 / 不接话 / 冷却中 / 静默旁听和标签），部署后可以据此看判断准不准、估算费用。冷却只记在内存里，重启网关清零。
+
+## 私聊助手：总结视频号视频（智能体 `assistant`）
+
+私聊里转发视频号视频给机器人，它会读视频里说的话并总结。视频号卡片本身只有作者名，所以链路是：
+
+1. 机器人收到卡片后点开它（面板「私聊设置」勾选「私聊视频号卡片点开读取」），视频在微信侧边栏里播放；
+2. 本机的 [wx_channel](https://github.com/nobiyou/wx_channel)（MIT，以管理员身份运行）拦截到播放请求，记下视频 ID、标题、地址和解密 key；
+3. 机器人从 wx_channel 找到这条视频，立即关掉侧边栏（否则会自动连播），把「标题、作者、视频ID」交给网关；
+4. 智能体调用 `get_channels_video_transcript`：下载视频（720p 即可）→ 解密开头 128KB → 用 imageio-ffmpeg 抽音频 → 第三方语音转文字 → 总结。
+
+部署：
+
+1. 下载 wx_channel 的 Release，解压到 `D:\wx_channel`，`config.yaml` 里设 `cloud_enabled: false`、`auto_open_channels: false`，`web_console_token` 改成随机串。以管理员身份运行一次（会安装根证书 SunnyRoot，只代理 `WeChatAppEx.exe`）。卸载证书：`wx_channel.exe --uninstall`。
+   ⚠ 它的控制台窗口要保持最小化：管理员窗口在前台时，Windows 会丢掉机器人的模拟点击和键盘输入（UIPI），机器人会发不出消息。
+2. 环境变量（机器人和网关都要能读到）：
+   - `WX_CHANNEL_TOKEN`：上面的 `web_console_token`
+   - `ASR_API_KEY`：语音转文字的 Key。默认用[硅基流动](https://cloud.siliconflow.cn)的 `FunAudioLLM/SenseVoiceSmall`；换别家就设 `ASR_BASE_URL` / `ASR_MODEL`，只要兼容 OpenAI 的 `/audio/transcriptions`。
+3. `pip install -r requirements.txt`（新增 `imageio-ffmpeg`，自带 ffmpeg，不用另装）。
+4. 面板新增接口，模型填 `assistant`，作为私聊用的接口。`assistant` 设了 `use_client_prompt: false`，不会接面板里的私聊提示词。
+5. 文字稿缓存在 `data/videos/<视频ID>.json`，追问同一条视频不会重复转写。`video` 服务配了 `tool_timeout: 150`，长视频转写慢时可调大（机器人那边请求超时是 180 秒）。
 
 ## 新增一个产品 / 群
 

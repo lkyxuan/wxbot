@@ -25,6 +25,14 @@
         "mcp_servers/food_server.py"
       ],
       "env": {}
+    },
+    "video": {
+      "command": "python",
+      "args": [
+        "mcp_servers/video_server.py"
+      ],
+      "env": {},
+      "tool_timeout": 150
     }
   },
   "agents": {
@@ -71,6 +79,14 @@
         "chat_when": "群友在闲聊，话题你能自然、轻松地接一句，比如运动、户外、天气、周末安排、吃喝、身体状态、群里的趣事；单纯打招呼、表情、和你无关的私事不算",
         "chat_cooldown_seconds": 60
       }
+    },
+    "assistant": {
+      "prompt_file": "agents/assistant.md",
+      "mcp": [
+        "video"
+      ],
+      "max_tool_rounds": 3,
+      "use_client_prompt": false
     },
     "maomao": {
       "prompt_file": "agents/maomao.md",

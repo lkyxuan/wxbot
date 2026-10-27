@@ -107,6 +107,8 @@ DEFAULT_CONFIG = {
     'api_chat_meta_headers': False,
     'ai_reply_image_dirs': [],
     'chat_image_recognition_switch': False,
+    'channels_video_switch': False,
+    'wx_channel_api': 'http://127.0.0.1:2026',
     'chat_image_recognition_api': 0,
     'group_image_recognition_switch': False,
     'group_image_recognition_api': 0,
@@ -209,6 +211,7 @@ def _coerce_bool_fields(merged_config):
         'clean_ai_reply_switch',            # AI 回复清洗开关
         'api_chat_meta_headers',            # 接口请求头附带群名/发言人
         'chat_image_recognition_switch',    # 私聊图片识别开关
+        'channels_video_switch',            # 私聊视频号卡片点开读取
         'group_image_recognition_switch',   # 群组图片识别开关
         'custom_forward_switch',            # 自定义转发总开关
         'chat_split_reply_switch',          # 私聊拆分多条回复开关
