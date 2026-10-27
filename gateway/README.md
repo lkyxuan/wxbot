@@ -23,6 +23,7 @@
 | `agents/*.md` | 各智能体的提示词 |
 | `mcp_servers/crypto_server.py` | 示例产品：加密货币行情（CoinGecko 公共接口） |
 | `mcp_servers/video_server.py` | 视频号视频：从 wx_channel 取视频、解密、转文字，供私聊助手总结 |
+| `mcp_servers/github_server.py` | GitHub 项目：按名字/关键词找仓库，记进 Notion「视频里的 GitHub 项目」 |
 | `mcp_servers/food_server.py` | 云谷美食：店库（高德）+ 群友口碑，识别分享卡片、推荐、记口碑、组局、高德链接 |
 | `refresh_base.py` / `refresh_base.bat` | 美食底库：按圆心和半径从高德批量拉周边餐饮店，可往外扩圈、定期更新 |
 | `start_gateway.bat` | Windows 一键启动 |
@@ -142,7 +143,8 @@ python refresh_base.py --radius 10000 --expand 5000 --expand-max 30000 --max-cal
    - `ASR_API_KEY`：语音转文字的 Key。默认用[硅基流动](https://cloud.siliconflow.cn)的 `FunAudioLLM/SenseVoiceSmall`；换别家就设 `ASR_BASE_URL` / `ASR_MODEL`，只要兼容 OpenAI 的 `/audio/transcriptions`。
 3. `pip install -r requirements.txt`（新增 `imageio-ffmpeg`，自带 ffmpeg，不用另装）。
 4. 面板新增接口，模型填 `assistant`，作为私聊用的接口。`assistant` 设了 `use_client_prompt: false`，不会接面板里的私聊提示词。
-5. 文字稿缓存在 `data/videos/<视频ID>.json`，追问同一条视频不会重复转写。`video` 服务配了 `tool_timeout: 150`，长视频转写慢时可调大（机器人那边请求超时是 180 秒）。
+5. 记录视频里的 GitHub 项目（`github` 服务）：在 [Notion 集成页](https://www.notion.so/my-integrations) 建一个内部集成，Key 设到 `NOTION_TOKEN`；打开数据库「视频里的 GitHub 项目」，右上角「⋯ → 连接」把这个集成加进去；数据库 ID（链接里 32 位十六进制）设到 `NOTION_PROJECTS_DB`。`GITHUB_TOKEN` 可选，只为提高搜索额度。
+6. 文字稿缓存在 `data/videos/<视频ID>.json`，追问同一条视频不会重复转写。`video` 服务配了 `tool_timeout: 150`，长视频转写慢时可调大（机器人那边请求超时是 180 秒）。
 
 ## 新增一个产品 / 群
 

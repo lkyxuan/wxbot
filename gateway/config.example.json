@@ -33,6 +33,13 @@
       ],
       "env": {},
       "tool_timeout": 150
+    },
+    "github": {
+      "command": "python",
+      "args": [
+        "mcp_servers/github_server.py"
+      ],
+      "env": {}
     }
   },
   "agents": {
@@ -83,9 +90,10 @@
     "assistant": {
       "prompt_file": "agents/assistant.md",
       "mcp": [
-        "video"
+        "video",
+        "github"
       ],
-      "max_tool_rounds": 3,
+      "max_tool_rounds": 8,
       "use_client_prompt": false
     },
     "maomao": {
