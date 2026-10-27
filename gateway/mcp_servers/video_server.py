@@ -11,6 +11,8 @@
 环境变量：
 - WX_CHANNEL_API：wx_channel 的 HTTP 接口，默认 http://127.0.0.1:2026
 - WX_CHANNEL_TOKEN：wx_channel config.yaml 里的 web_console_token
+- WX_CHANNEL_LOG：wx_channel 的日志文件，默认 D:\wx_channel\logs\wx_channel.log
+  （浏览记录更新时只换视频地址不换 key，配对的地址和 key 要从日志里取，见 paired_url_key）
 - ASR_BASE_URL：OpenAI 兼容的语音转文字接口，默认硅基流动 https://api.siliconflow.cn/v1
 - ASR_MODEL：默认 FunAudioLLM/SenseVoiceSmall
 - ASR_API_KEY：语音转文字接口的 Key
@@ -23,6 +25,7 @@
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -31,6 +34,9 @@ import requests
 from mcp.server.mcpserver import MCPServer
 
 WX_CHANNEL_API = os.environ.get("WX_CHANNEL_API", "http://127.0.0.1:2026").rstrip("/")
+WX_CHANNEL_LOG = os.environ.get("WX_CHANNEL_LOG", r"D:\wx_channel\logs\wx_channel.log")
+# 只读日志末尾这么多字节就够找到刚播放的视频（日志单文件上限 5MB）
+LOG_TAIL_BYTES = 2 * 1024 * 1024
 ASR_BASE_URL = os.environ.get("ASR_BASE_URL", "https://api.siliconflow.cn/v1").rstrip("/")
 ASR_MODEL = os.environ.get("ASR_MODEL", "FunAudioLLM/SenseVoiceSmall")
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "videos")
@@ -169,6 +175,28 @@ def find_record(video_id="", author=""):
     return None
 
 
+def paired_url_key(video_id, log_path=None):
+    """从 wx_channel 日志里取这条视频最近一次播放时成对的（地址, key）。
+
+    同一条视频每次播放，腾讯给的地址（token）和解密 key 都会换一对。wx_channel 的浏览记录
+    更新时只换了 videoUrl、decryptKey 还是第一次的，拿记录里的两者去解密必然对不上；
+    日志每次都会打一行「[视频信息] ID=… | URL=… | Key=… | 分辨率=…」，取最后一行即可。
+    找不到时返回 None。
+    """
+    path = log_path or WX_CHANNEL_LOG
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - LOG_TAIL_BYTES))
+            text = f.read().decode("utf-8", "ignore")
+    except OSError:
+        return None
+    pattern = re.compile(r"\[视频信息\] ID=" + re.escape(str(video_id))
+                         + r" \|.*? URL=(\S+) \| Key=(\d*) \| ")
+    matches = pattern.findall(text)
+    return matches[-1] if matches else None
+
+
 def _download(url, key, path):
     with requests.get(url, stream=True, timeout=60) as resp:
         resp.raise_for_status()
@@ -227,7 +255,8 @@ def transcribe_record(record):
     with tempfile.TemporaryDirectory() as tmp:
         video = os.path.join(tmp, "video.mp4")
         audio = os.path.join(tmp, "audio.mp3")
-        _download(record["videoUrl"], record.get("decryptKey") or "", video)
+        url, key = paired_url_key(record["id"]) or (record["videoUrl"], record.get("decryptKey") or "")
+        _download(url, key, video)
         transcript = _transcribe(audio) if _extract_audio(video, audio) else ""
     with open(cache, "w", encoding="utf-8") as f:
         json.dump({"id": record["id"], "title": record.get("title"), "author": record.get("author"),
