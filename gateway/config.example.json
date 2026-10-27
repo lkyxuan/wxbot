@@ -71,6 +71,20 @@
         "chat_when": "群友在闲聊，话题你能自然、轻松地接一句，比如运动、户外、天气、周末安排、吃喝、身体状态、群里的趣事；单纯打招呼、表情、和你无关的私事不算",
         "chat_cooldown_seconds": 60
       }
+    },
+    "maomao": {
+      "prompt_file": "agents/maomao.md",
+      "mcp": [],
+      "max_tool_rounds": 3,
+      "use_client_prompt": true,
+      "auto_reply": {
+        "judge_llm": {},
+        "context_messages": 8,
+        "reply_when": "有人叫猫猫、跟猫猫说话、问猫猫问题、接猫猫刚说的话；有人分享心情、求安慰、求陪聊",
+        "cooldown_seconds": 0,
+        "chat_when": "群友之间在闲聊，话题猫猫能自然、可爱地插一句，比如吃喝、天气、上班、周末、宠物、群里的趣事；单纯打招呼、表情不算",
+        "chat_cooldown_seconds": 60
+      }
     }
   }
 }
