@@ -1463,11 +1463,12 @@ class _MergedMessage:
     @，不会"引用失败就降级"。
     """
 
-    def __init__(self, content, sender, msg_type, merged_image, last_msg):
+    def __init__(self, content, sender, msg_type, merged_image, last_msg, multi_sender=False):
         self.content      = content
         self.sender       = sender
         self.type         = msg_type
         self.merged_image = merged_image
+        self.multi_sender = multi_sender   # True：content 已逐行带「发言人: 」，不要再整体加前缀
         # 用 __dict__ 存，避免 __getattr__ 在属性缺失时递归
         self.__dict__['_last_msg'] = last_msg
 
@@ -3647,16 +3648,22 @@ class WXBot:
 
     def _buffer_message(self, chat, msg):
         """把一条消息放进合并缓冲；到期或达到条数上限由主循环统一处理。"""
-        key     = (chat.who, msg.sender)    # 群聊按发送人分开，A、B 不能混在一起
+        content = str(msg.content)
+        # 群聊里没 @ 的闲聊：窗口内所有人的话合成一条，只回一次；
+        # @ 机器人和「每句都回」的发言人仍按发言人单独缓冲、单独回复
+        group_wide = (chat.who in self.config.group
+                      and not (self.config.AtMe and self.config.AtMe in content)
+                      and not self._is_always_reply_sender(chat.who, msg.sender))
+        key     = (chat.who, None) if group_wide else (chat.who, msg.sender)
         now     = time.monotonic()
         window  = self.config.merge_reply_window
-        content = str(msg.content)
         with self._merge_lock:
             entry = self._merge_buffers.get(key)
             if entry is None:
                 entry = {
                     'chat':        chat,
                     'texts':       [],
+                    'senders':     [],
                     'types':       [],
                     'image_paths': [],
                     'last_msg':    msg,
@@ -3666,6 +3673,7 @@ class WXBot:
                 }
                 self._merge_buffers[key] = entry
             entry['texts'].append(content)
+            entry['senders'].append(msg.sender)
             entry['types'].append(str(msg.type))
             if msg.type == 'image' and content:
                 entry['image_paths'].append(content)
@@ -3677,7 +3685,7 @@ class WXBot:
             entry['count']      += 1
             count = entry['count']
         log(message=(
-            f"[合并回复] {chat.who} / {msg.sender} 第 {count} 条进入缓冲"
+            f"[合并回复] {chat.who} / {'全群' if group_wide else msg.sender}（{msg.sender}）第 {count} 条进入缓冲"
             f"（窗口 {window} 秒，满 {self.config.merge_reply_max_count} 条立即回复）"
         ))
 
@@ -3778,13 +3786,21 @@ class WXBot:
         texts       = entry['texts']
         types       = entry['types']
         image_paths = entry['image_paths']
+        senders     = entry['senders']
         image_path  = image_paths[-1] if image_paths else ''   # 接口只收一张，取最后一张
+        multi       = len(set(senders)) > 1
+        if multi:
+            # 多人合并：逐行标上发言人，AI 才分得清谁说了什么
+            content = "\n".join(f"{s}: {t}" for s, t in zip(senders, texts))
+        else:
+            content = "\n".join(texts)
         merged = _MergedMessage(
-            content      = "\n".join(texts),
+            content      = content,
             sender       = entry['last_sender'],
             msg_type     = 'image' if image_path else 'text',
             merged_image = image_path,
             last_msg     = entry['last_msg'],
+            multi_sender = multi,
         )
         log(message=(
             f"[合并回复] {chat.who} / {entry['last_sender']} 合并 {len(texts)} 条"
@@ -3794,11 +3810,11 @@ class WXBot:
         # 逐条补写记忆：必须在 process_message 之后 —— 先写会让 AI 读历史时
         # 当前消息已经在里面，同一条消息进 AI 两次（全局模式踩过这个坑）。
         if self.config.memory_switch and self.memory_manager:
-            for text, msg_type in zip(texts, types):
+            for text, msg_type, sender in zip(texts, types, senders):
                 try:
                     self.memory_manager.save_message(
                         chat_name  = chat.who,
-                        sender     = entry['last_sender'],
+                        sender     = sender,
                         content    = text,
                         msg_type   = msg_type,
                         msg_attr   = 'friend',
@@ -4065,7 +4081,10 @@ class WXBot:
                 content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
                 log(message=f"群组 {chat.who} 消息：" + content_without_at)
                 # 拼接发送人前缀，与历史消息格式保持一致
-                content_with_sender = f"{message.sender}: {content_without_at}"
+                if getattr(message, 'multi_sender', False):
+                    content_with_sender = content_without_at   # 多人合并，每行已带发言人
+                else:
+                    content_with_sender = f"{message.sender}: {content_without_at}"
                 try:
                     history = []
                     if self.config.memory_switch and self.memory_manager:
@@ -4100,7 +4119,7 @@ class WXBot:
                             rec_index = self.config.group_image_recognition_api
                             reply = self._call_api_with_fallback(
                                 rec_index,
-                                f"{message.sender}: {content_without_at}",
+                                content_with_sender,
                                 prompt=_effective_group_prompt,
                                 chat_meta=_chat_meta,
                                 history=history,
