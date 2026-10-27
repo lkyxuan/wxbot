@@ -3627,6 +3627,8 @@ class WXBot:
             entry['last_msg']    = msg        # 只用于 quote()，见 _MergedMessage
             entry['last_sender'] = msg.sender
             entry['deadline']    = now + window   # 窗口内有新消息 → 刷新计时
+            if self.config.AtMe and self.config.AtMe in content:
+                entry['deadline'] = now           # 被 @ → 不等窗口，连同之前缓冲的下一轮立即回复
             entry['count']      += 1
             count = entry['count']
         log(message=(
