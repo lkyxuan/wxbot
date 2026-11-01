@@ -49,6 +49,13 @@ Windows：微信 ── 机器人 ──(Tailscale)──> Mac mini：网关 :81
          wx_channel :2026 <──(Tailscale)── video 工具（下载、解密、转文字都在 Mac 做）
 ```
 
+0. **装环境**（在 Mac 的 `gateway` 目录下；系统自带 Python 3.9 太旧，用 Homebrew 或 uv 装 3.12）：
+   ```
+   python3.12 -m venv .venv
+   .venv/bin/pip install -r requirements.txt
+   mkdir -p logs
+   ```
+   启动脚本固定用 `gateway/.venv/bin/python`，`logs/` 是 launchd 写日志的地方，都要先建好。
 1. **网关监听 Tailscale 地址**：`config.json` 里 `listen.host` 改成 Mac 的 Tailscale IP（例如 `100.123.241.60`），局域网和外网都访问不到；`api_keys` 照样要填。
 2. **回复里的图片**：`files.base_url` 填网关自己的地址（例如 `http://100.123.241.60:8100`）。网关会把回复里 `files.dir`（默认 `data/images`）下的本地图片路径改写成带签名的下载链接；机器人 `config/config.json` 的 `ai_reply_image_dirs` 里写上链接前缀 `http://100.123.241.60:8100/files/`，机器人只下载这个前缀的图片，存到本机临时目录后再发。`base_url` 留空就是原来的本机模式。
 3. **视频号**：wx_channel 留在 Windows。`mcp_servers.video.env` 里设 `"WX_CHANNEL_API": "http://100.79.73.88:2026"`（Windows 的 Tailscale IP），`WX_CHANNEL_TOKEN` 和 Windows 上 wx_channel 的 token 一致。wx_channel 默认监听所有地址，Windows 防火墙要把 2026 端口限制成只让 Mac 访问。
