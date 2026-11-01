@@ -26,6 +26,7 @@
 | `mcp_servers/food_server.py` | 云谷美食：店库（高德）+ 群友口碑，识别分享卡片、推荐、记口碑、组局、高德链接 |
 | `refresh_base.py` / `refresh_base.bat` | 美食底库：按圆心和半径从高德批量拉周边餐饮店，可往外扩圈、定期更新 |
 | `start_gateway.bat` | Windows 一键启动 |
+| `deploy/mac/` | 放在 Mac mini 上时的启动脚本和 launchd 模板 |
 | `tests/` | 单元测试（`python -m pytest tests`，需另装 pytest） |
 
 ## 在 Windows 上部署
@@ -38,6 +39,22 @@
    - `api_keys`：改成一串随机字符，面板里接口的 API Key 填同一串。
    - `llm`：大模型接口。默认是 DeepSeek（`deepseek-chat` 支持工具调用）。Key 建议放环境变量 `DEEPSEEK_API_KEY`，不要写进文件。换别家的话改 `base_url` / `model` 即可，只要兼容 OpenAI 格式并支持 function calling。
 3. 启动：双击 `start_gateway.bat`，看到 `MCP 服务 crypto 已连接` 和 `网关已启动` 即可。网关默认只监听 `127.0.0.1:8100`，外网和局域网都访问不到。
+
+## 放在另一台电脑上（Mac mini）
+
+Windows 只跑微信、机器人和 wx_channel，网关、智能体、工具、密钥都放在 Mac mini 上统一管理，两台之间走 Tailscale。
+
+```
+Windows：微信 ── 机器人 ──(Tailscale)──> Mac mini：网关 :8100 ── 大模型 / MCP 工具
+         wx_channel :2026 <──(Tailscale)── video 工具（下载、解密、转文字都在 Mac 做）
+```
+
+1. **网关监听 Tailscale 地址**：`config.json` 里 `listen.host` 改成 Mac 的 Tailscale IP（例如 `100.123.241.60`），局域网和外网都访问不到；`api_keys` 照样要填。
+2. **回复里的图片**：`files.base_url` 填网关自己的地址（例如 `http://100.123.241.60:8100`）。网关会把回复里 `files.dir`（默认 `data/images`）下的本地图片路径改写成带签名的下载链接；机器人 `config/config.json` 的 `ai_reply_image_dirs` 里写上链接前缀 `http://100.123.241.60:8100/files/`，机器人只下载这个前缀的图片，存到本机临时目录后再发。`base_url` 留空就是原来的本机模式。
+3. **视频号**：wx_channel 留在 Windows。`mcp_servers.video.env` 里设 `"WX_CHANNEL_API": "http://100.79.73.88:2026"`（Windows 的 Tailscale IP），`WX_CHANNEL_TOKEN` 和 Windows 上 wx_channel 的 token 一致。wx_channel 默认监听所有地址，Windows 防火墙要把 2026 端口限制成只让 Mac 访问。
+4. **密钥**：在 Mac 上用 1Password 注入，不写进文件。复制 `deploy/mac/secrets.env.example` 为 `deploy/mac/secrets.env`，每行写 `变量名=op://库ID/条目ID/字段`（只是引用，不是密钥本身；这个文件不会提交到仓库）。
+5. **开机自启**：用 `deploy/mac/run_gateway.sh` 启动（它用 `op run` 注入密钥），`deploy/mac/com.wxbot.gateway.plist` 是 launchd 模板，改好路径后放到 `~/Library/LaunchAgents/`，`launchctl load` 即可，崩溃会自动拉起。
+6. **面板切换**：模型配置里把各接口的 Base URL 从 `http://127.0.0.1:8100/v1` 改成 `http://100.123.241.60:8100/v1`。先切一个测试群，没问题再切全部；Windows 上的旧网关先保留，出问题改回地址即可。
 
 ## 在 SiverWXbot 面板里接群
 
