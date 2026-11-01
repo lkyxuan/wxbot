@@ -21,6 +21,7 @@
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -31,9 +32,9 @@ import time
 import uuid
 from contextlib import AsyncExitStack
 from datetime import datetime
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import OpenAI
@@ -438,6 +439,49 @@ class AutoReply:
 
 
 # ============================================================
+# 回复里的图片（配置里的 files）
+# ------------------------------------------------------------
+# 工具把图片存在网关本机，回复里写「[图片]本地路径」。网关和机器人不在同一台
+# 电脑时，机器人读不到这个路径：配置了 files.base_url 就把这些行改写成
+# 「[图片]<base_url>/files/<文件名>?sig=<签名>」，机器人按链接下载后再发。
+# 只改写 files.dir 目录里真实存在的文件；签名用第一个 api_key 做 HMAC，
+# 下载链接不用带 Authorization，但猜不出别的文件的地址。
+# ============================================================
+IMAGE_LINE_RE = re.compile(r"^(\s*\[图片\]\s*)(.+?)\s*$", re.MULTILINE)
+
+
+def files_dir(cfg):
+    path = (cfg.get("files") or {}).get("dir") or os.path.join("data", "images")
+    return os.path.realpath(os.path.join(BASE_DIR, path))
+
+
+def file_signature(cfg, name):
+    keys = [k for k in cfg.get("api_keys", []) if k]
+    if not keys:
+        return ""
+    return hmac.new(keys[0].encode(), name.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def publish_images(content, cfg):
+    """把回复里 files.dir 下的本地图片路径改写成网关的下载链接；没配 base_url 时原样返回。"""
+    base_url = ((cfg.get("files") or {}).get("base_url") or "").rstrip("/")
+    if not base_url or not content or "[图片]" not in content:
+        return content
+    root = files_dir(cfg)
+
+    def repl(match):
+        path = os.path.realpath(match.group(2).strip().strip('"').strip("'"))
+        if not path.startswith(root + os.sep) or not os.path.isfile(path):
+            return match.group(0)
+        name = os.path.relpath(path, root).replace(os.sep, "/")
+        url = f"{base_url}/files/{quote(name)}"
+        sig = file_signature(cfg, name)
+        return match.group(1) + (f"{url}?sig={sig}" if sig else url)
+
+    return IMAGE_LINE_RE.sub(repl, content)
+
+
+# ============================================================
 # HTTP 接口（OpenAI 兼容）
 # ============================================================
 def request_meta():
@@ -459,12 +503,18 @@ def create_app(cfg, runner):
     api_keys = [k for k in cfg.get("api_keys", []) if k]
     @app.before_request
     def check_auth():
-        if not api_keys:
+        if not api_keys or request.path.startswith("/files/"):
             return None
         token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
         if token not in api_keys:
             return jsonify({"error": {"message": "invalid api key", "type": "auth_error"}}), 401
         return None
+
+    @app.get("/files/<path:name>")
+    def get_file(name):
+        if not hmac.compare_digest(request.args.get("sig", ""), file_signature(cfg, name)):
+            abort(404)
+        return send_from_directory(files_dir(cfg), name)
 
     @app.get("/v1/models")
     def list_models():
@@ -482,7 +532,7 @@ def create_app(cfg, runner):
                 "type": "invalid_request_error"}}), 404
         started = time.time()
         try:
-            content = auto_reply.respond(agent_name, body.get("messages", []), request_meta())
+            content = publish_images(auto_reply.respond(agent_name, body.get("messages", []), request_meta()), cfg)
         except Exception as e:
             log.exception("智能体 %s 执行失败", agent_name)
             return jsonify({"error": {"message": str(e), "type": "server_error"}}), 500

@@ -35,6 +35,7 @@ import time
 import json
 import hashlib
 import random
+import tempfile
 import calendar
 import threading
 import queue
@@ -378,8 +379,13 @@ def strip_leading_timestamps(text):
 # 文字照常发送，图片随后用 SendFiles 发出。
 # ⚠ 只发送 ai_reply_image_dirs 目录下真实存在的图片文件：群友可能诱导 AI
 # 写出任意路径，不加目录限制就等于能把本机图片发到群里。默认为空即关闭。
+# 网关在另一台电脑上时，网关把路径改写成它的下载链接（[图片]http://...）；
+# ai_reply_image_dirs 里写上链接前缀（例如 http://100.123.241.60:8100/files/），
+# 机器人只下载这些前缀开头的链接，存到本机临时目录后再发。
 # ============================================================
-AI_IMAGE_MARKER_RE = re.compile(r'^\s*\[图片\]\s*(.+?\.(?:png|jpe?g|gif|webp|bmp))\s*$', re.IGNORECASE | re.MULTILINE)
+AI_IMAGE_MARKER_RE = re.compile(r'^\s*\[图片\]\s*(.+?\.(?:png|jpe?g|gif|webp|bmp)(?:\?\S*)?)\s*$', re.IGNORECASE | re.MULTILINE)
+AI_IMAGE_DOWNLOAD_DIR = os.path.join(tempfile.gettempdir(), 'wxbot_ai_images')
+AI_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
 
 # AI 回复是这个标记时什么都不发（自建网关在「AI 判断接话」的群里判断不接话时返回它）
@@ -394,14 +400,45 @@ def is_ai_no_reply(reply):
     return isinstance(reply, str) and strip_leading_timestamps(reply).strip() == AI_NO_REPLY_MARK
 
 
+def _download_ai_reply_image(url):
+    """把网关给的图片链接下载到本机临时目录，返回本地路径；失败返回空字符串。"""
+    ext = os.path.splitext(url.split('?', 1)[0])[1].lower() or '.png'
+    path = os.path.join(AI_IMAGE_DOWNLOAD_DIR, hashlib.sha1(url.encode('utf-8')).hexdigest()[:16] + ext)
+    try:
+        os.makedirs(AI_IMAGE_DOWNLOAD_DIR, exist_ok=True)
+        with requests.get(url, stream=True, timeout=15) as resp:
+            resp.raise_for_status()
+            data = b''
+            for chunk in resp.iter_content(64 * 1024):
+                data += chunk
+                if len(data) > AI_IMAGE_MAX_BYTES:
+                    raise ValueError('图片太大')
+        with open(path, 'wb') as f:
+            f.write(data)
+        return path
+    except Exception as e:
+        log(level="WARNING", message=f"下载 AI 回复里的图片失败，已跳过：{url}（{e}）")
+        return ''
+
+
 def extract_ai_reply_images(text, allowed_dirs):
     """拆出回复里的图片标记行，返回 (去掉标记后的文字, 允许发送的图片路径列表)。"""
     if not text or '[图片]' not in text:
         return text, []
-    roots = [os.path.normcase(os.path.realpath(d)) for d in allowed_dirs if d]
+    url_prefixes = [d for d in allowed_dirs if d and d.lower().startswith(('http://', 'https://'))]
+    roots = [os.path.normcase(os.path.realpath(d)) for d in allowed_dirs if d and d not in url_prefixes]
     images = []
     for raw in AI_IMAGE_MARKER_RE.findall(text):
-        path = os.path.realpath(raw.strip().strip('"').strip("'"))
+        raw = raw.strip().strip('"').strip("'")
+        if raw.lower().startswith(('http://', 'https://')):
+            if not any(raw.startswith(prefix) for prefix in url_prefixes):
+                log(level="WARNING", message=f"AI 回复里的图片链接不在 ai_reply_image_dirs 允许的前缀内，已跳过：{raw}")
+                continue
+            path = _download_ai_reply_image(raw)
+            if path and path not in images:
+                images.append(path)
+            continue
+        path = os.path.realpath(raw)
         norm = os.path.normcase(path)
         if not os.path.isfile(path):
             log(level="WARNING", message=f"AI 回复里的图片不存在，已跳过：{raw}")
