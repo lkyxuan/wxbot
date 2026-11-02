@@ -3,7 +3,7 @@
 本仓库是 [SiverKing/SiverWXbot_plus](https://github.com/SiverKing/SiverWXbot_plus) 的独立副本（未使用 GitHub fork，但保留了上游完整提交历史），在此基础上二次开发。
 
 - 上游仓库：https://github.com/SiverKing/SiverWXbot_plus
-- 当前已同步到：v4.8.1（上游提交 `5f2f773`）
+- 当前已同步到：v4.8.2（上游提交 `87066e7`）
 
 ## 同步上游新版本
 
