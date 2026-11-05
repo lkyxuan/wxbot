@@ -63,6 +63,22 @@ Windows：微信 ── 机器人 ──(Tailscale)──> Mac mini：网关 :81
 5. **开机自启**：用 `deploy/mac/run_gateway.sh` 启动（它用 `op run` 注入密钥），`deploy/mac/com.wxbot.gateway.plist` 是 launchd 模板，改好路径后放到 `~/Library/LaunchAgents/`，`launchctl load` 即可，崩溃会自动拉起。
 6. **面板切换**：模型配置里把各接口的 Base URL 从 `http://127.0.0.1:8100/v1` 改成 `http://100.123.241.60:8100/v1`。先切一个测试群，没问题再切全部；Windows 上的旧网关先保留，出问题改回地址即可。
 
+## 只用一个接口：按群名分智能体
+
+面板里可以只留一个接口（模型名填 `assistant`，Base URL 指向网关），哪个群用哪个智能体在网关 `config.json` 的 `routes` 里配：
+
+```json
+"routes": {
+  "猫猫的朋友们☕": "maomao",
+  "《云谷人能吃》自动版": "yungu-food"
+}
+```
+
+- 机器人要打开「接口请求头附带群名/发言人」（`api_chat_meta_headers`），网关才知道消息来自哪个群。群名要和微信里显示的一字不差。
+- `routes` 里登记了的群（或好友）用登记的智能体；没登记的用请求里的模型名，也就是私聊和其它群都走 `assistant`。
+- 只想正常聊天、不需要工具的群可以指向 `chat` 智能体，人设和语气继续用面板里给这个群设的提示词。
+- 改完 `routes` 重启网关生效，面板不用动。
+
 ## 在 SiverWXbot 面板里接群
 
 1. **模型配置 → 新增接口**：
