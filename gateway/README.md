@@ -59,7 +59,7 @@ Windows：微信 ── 机器人 ──(Tailscale)──> Mac mini：网关 :81
 1. **网关监听 Tailscale 地址**：`config.json` 里 `listen.host` 改成 Mac 的 Tailscale IP（例如 `100.123.241.60`），局域网和外网都访问不到；`api_keys` 照样要填。
 2. **回复里的图片**：`files.base_url` 填网关自己的地址（例如 `http://100.123.241.60:8100`）。网关会把回复里 `files.dir`（默认 `data/images`）下的本地图片路径改写成带签名的下载链接；机器人 `config/config.json` 的 `ai_reply_image_dirs` 里写上链接前缀 `http://100.123.241.60:8100/files/`，机器人只下载这个前缀的图片，存到本机临时目录后再发。`base_url` 留空就是原来的本机模式。
 3. **视频号**：wx_channel 留在 Windows。`mcp_servers.video.env` 里设 `"WX_CHANNEL_API": "http://100.79.73.88:2026"`（Windows 的 Tailscale IP），`WX_CHANNEL_TOKEN` 和 Windows 上 wx_channel 的 token 一致。wx_channel 默认监听所有地址，Windows 防火墙要把 2026 端口限制成只让 Mac 访问。
-4. **密钥**：在 Mac 上用 1Password 注入，不写进文件。复制 `deploy/mac/secrets.env.example` 为 `deploy/mac/secrets.env`，每行写 `变量名=op://库ID/条目ID/字段`（只是引用，不是密钥本身；这个文件不会提交到仓库）。
+4. **密钥**：在 Mac 上用 1Password 注入，不写进文件。开机自启时没人点桌面版的授权窗口，所以用服务账号：把它的 token 存进登录钥匙串（`security add-generic-password -U -s wxbot-op-service-account -a wxbot -w`），启动脚本会自己读。复制 `deploy/mac/secrets.env.example` 为 `deploy/mac/secrets.env`，每行写 `变量名=op://库ID/条目ID/字段`（只是引用，不是密钥本身；这个文件不会提交到仓库）。
 5. **开机自启**：用 `deploy/mac/run_gateway.sh` 启动（它用 `op run` 注入密钥），`deploy/mac/com.wxbot.gateway.plist` 是 launchd 模板，改好路径后放到 `~/Library/LaunchAgents/`，`launchctl load` 即可，崩溃会自动拉起。
 6. **面板切换**：模型配置里把各接口的 Base URL 从 `http://127.0.0.1:8100/v1` 改成 `http://100.123.241.60:8100/v1`。先切一个测试群，没问题再切全部；Windows 上的旧网关先保留，出问题改回地址即可。
 
