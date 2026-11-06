@@ -7,6 +7,12 @@
     "dir": "data/images",
     "base_url": ""
   },
+  "routes": {
+    "猫猫的朋友们☕": "maomao",
+    "《云谷人能吃》自动版": "yungu-food",
+    "云谷运动派": "yungu-fitness",
+    "某个闲聊群": "chat"
+  },
   "api_keys": [
     "改成一串随机字符，面板里接口的 Key 填同一串"
   ],
@@ -105,6 +111,12 @@
         "chat_when": "群友之间在闲聊，话题喵喵能自然、可爱地插一句，比如吃喝、天气、上班、周末、宠物、群里的趣事；单纯打招呼、表情不算",
         "chat_cooldown_seconds": 600
       }
+    },
+    "chat": {
+      "prompt_file": "agents/chat.md",
+      "mcp": [],
+      "max_tool_rounds": 1,
+      "use_client_prompt": true
     }
   }
 }

@@ -178,8 +178,9 @@ def test_judge_error_means_no_reply():
 def test_request_meta_headers():
     app = gateway.Flask(__name__)
     with app.test_request_context(headers={
-        "X-WX-Chat": quote("美食群", safe=""), "X-WX-Sender": quote("小红", safe=""), "X-WX-Mentioned": "0"}):
-        assert gateway.request_meta() == {"chat": "美食群", "sender": "小红", "mentioned": False}
+        "X-WX-Chat": quote("美食群", safe=""), "X-WX-Chat-Type": "group", "X-WX-Sender": quote("小红", safe=""),
+            "X-WX-Mentioned": "0"}):
+        assert gateway.request_meta() == {"chat": "美食群", "chat_type": "group", "sender": "小红", "mentioned": False}
     with app.test_request_context():
         assert gateway.request_meta()["mentioned"] is None
 

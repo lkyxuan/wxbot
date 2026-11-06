@@ -60,6 +60,9 @@ def load_config(path):
     cfg.setdefault("agents", {})
     if not cfg["agents"]:
         raise ValueError("配置里至少要有一个智能体（agents）")
+    for chat, agent_name in (cfg.get("routes") or {}).items():
+        if agent_name not in cfg["agents"]:
+            raise ValueError(f"routes 里「{chat}」指向不存在的智能体：{agent_name}")
     for name, agent in cfg["agents"].items():
         prompt_file = agent.get("prompt_file")
         if prompt_file:
@@ -492,9 +495,19 @@ def request_meta():
     mentioned = request.headers.get("X-WX-Mentioned")
     return {
         "chat": header("X-WX-Chat"),
+        "chat_type": header("X-WX-Chat-Type"),
         "sender": header("X-WX-Sender"),
         "mentioned": None if mentioned is None else mentioned.strip() == "1",
     }
+
+
+def pick_agent(cfg, body, meta):
+    """选智能体：配置 routes 里登记了这个群（或好友）就用登记的，否则用请求里的模型名。
+    这样面板里只需要一个接口，哪个群用哪个智能体都在网关配置里改。"""
+    routed = (cfg.get("routes") or {}).get(meta.get("chat") or "")
+    if routed:
+        return routed
+    return body.get("model") or cfg.get("default_agent")
 
 
 def create_app(cfg, runner):
@@ -525,14 +538,15 @@ def create_app(cfg, runner):
     @app.post("/v1/chat/completions")
     def chat_completions():
         body = request.get_json(force=True, silent=True) or {}
-        agent_name = body.get("model") or cfg.get("default_agent")
+        meta = request_meta()
+        agent_name = pick_agent(cfg, body, meta)
         if agent_name not in cfg["agents"]:
             return jsonify({"error": {
                 "message": f"未知智能体 {agent_name}，可用：{', '.join(cfg['agents'])}",
                 "type": "invalid_request_error"}}), 404
         started = time.time()
         try:
-            content = publish_images(auto_reply.respond(agent_name, body.get("messages", []), request_meta()), cfg)
+            content = publish_images(auto_reply.respond(agent_name, body.get("messages", []), meta), cfg)
         except Exception as e:
             log.exception("智能体 %s 执行失败", agent_name)
             return jsonify({"error": {"message": str(e), "type": "server_error"}}), 500
