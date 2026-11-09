@@ -2,7 +2,7 @@ wxbot
 Copyright 2026 lkyxuan
 
 本项目基于 SiverWXbot_plus（https://github.com/SiverKing/SiverWXbot_plus）
-v4.8.1（上游提交 5f2f773）二次开发，原作者 Siver（SiverKing），Apache License 2.0。
+v4.8.3（上游提交 a861923）二次开发，原作者 Siver（SiverKing），Apache License 2.0。
 上游完整提交历史已保留在本仓库中。
 
 相对上游的本地修改：
