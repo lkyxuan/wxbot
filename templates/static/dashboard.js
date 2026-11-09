@@ -548,140 +548,19 @@ $(function(){
     return s;
   }
 
-  // ===== 群组卡片：每个群一张，展开后配置接口 / Prompt / 判断接话 / 发言人 Prompt =====
-  var groupCandidates = {groups: [], members: {}};
-  function buildGsdRow(sender, promptName, always){
-    var $row = $('<div class="list-item gsp-row" style="gap:6px;margin-bottom:6px;"></div>');
-    $('<input type="text" class="form-control gsp-sender" list="wx-member-datalist" placeholder="发言人（可下拉选择）">')
-      .val(sender || '').appendTo($row);
-    $('<select class="form-select group-sender-prompt-select" style="width:145px;flex-shrink:0;" title="叠加在群 Prompt 后的专属设定（默认=不加）"></select>')
-      .html(buildPromptOpts(promptName || '')).appendTo($row);
-    var $always = $('<label style="display:flex;align-items:center;gap:4px;font-size:12.5px;white-space:nowrap;margin:0;flex-shrink:0;" title="他说的每句话都当作 @ 了机器人"></label>').appendTo($row);
-    $('<input type="checkbox" class="form-check-input gsp-always" style="margin:0;">').prop('checked', !!always).appendTo($always);
-    $always.append('每句都回');
-    $('<button type="button" class="btn-rm btn-remove-item" title="删除"><i class="bi bi-x-lg"></i></button>').appendTo($row);
-    return $row;
-  }
-  function buildGroupCard(name, opts){
-    opts = opts || {};
-    var apiIdx = (opts.api === undefined || opts.api === null) ? -1 : parseInt(opts.api);
-    var $card = $('<div class="list-item group-card" style="flex-direction:column;align-items:stretch;gap:8px;border:1px solid #e5e7eb;border-radius:8px;padding:8px;"></div>');
-    var $head = $('<div style="display:flex;align-items:center;gap:6px;"></div>').appendTo($card);
-    $('<button type="button" class="btn btn-light btn-sm btn-group-toggle" title="展开/收起" style="flex-shrink:0;border:1px solid #e5e7eb;"><i class="bi bi-chevron-right"></i></button>').appendTo($head);
-    $('<input type="text" class="form-control" name="group" list="wx-group-datalist" placeholder="群聊名称（可下拉选择）">')
-      .val(name || '').appendTo($head);
-    $('<span class="group-card-summary cfg-hint" style="margin:0;white-space:nowrap;"></span>').appendTo($head);
-    $('<button type="button" class="btn-rm btn-remove-item" title="删除该群"><i class="bi bi-x-lg"></i></button>').appendTo($head);
-
-    var $body = $('<div class="group-card-body" style="display:none;padding-left:34px;"></div>').appendTo($card);
-    var $opts = $('<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px;"></div>').appendTo($body);
-    $('<select class="form-select group-prompt-select" style="width:160px;" title="该群专属Prompt（空=使用全局Prompt）"></select>')
-      .html(buildPromptOpts(opts.prompt || '')).appendTo($opts);
-    $('<select class="form-select group-api-select" style="width:180px;" title="该群调用的AI接口（选默认则跟随全局配置）"></select>')
-      .html(buildGroupApiOpts(isNaN(apiIdx) ? -1 : apiIdx)).appendTo($opts);
-    var $decide = $('<label class="group-ai-decide-label" style="display:flex;align-items:center;gap:4px;font-size:12.5px;white-space:nowrap;margin:0;" title="每条消息都交给 AI，由接口判断接不接（需要自建网关配置 auto_reply）"></label>').appendTo($opts);
-    $('<input type="checkbox" class="form-check-input group-ai-decide-check" style="margin:0;">').prop('checked', !!opts.decide).appendTo($decide);
-    $decide.append('AI 判断接话');
-
-    $('<div class="cfg-label" style="font-size:13px;margin-bottom:6px;">发言人专属 Prompt</div>').appendTo($body);
-    var $list = $('<div class="gsp-list"></div>').appendTo($body);
-    var always = opts.always || [], shown = [];
-    $.each(opts.senders || {}, function(sender, promptName){
-      $list.append(buildGsdRow(sender, promptName, always.indexOf(sender) !== -1));
-      shown.push(sender);
-    });
-    always.forEach(function(sender){ if (shown.indexOf(sender) === -1) $list.append(buildGsdRow(sender, '', true)); });
-    $('<button type="button" class="btn-add btn-add-gsp"><i class="bi bi-plus-circle"></i> 添加发言人</button>').appendTo($body);
-    updateGroupCardSummary($card);
-    return $card;
-  }
-  function updateGroupCardSummary($card){
-    var parts = [];
-    var p = $card.find('.group-prompt-select').val();
-    if (p) parts.push(p);
-    var n = $card.find('.gsp-row').filter(function(){
-      return $(this).find('.gsp-sender').val().trim() && ($(this).find('.group-sender-prompt-select').val() || $(this).find('.gsp-always').is(':checked'));
-    }).length;
-    if (n) parts.push(n + ' 位发言人');
-    if ($card.find('.group-ai-decide-check').is(':checked')) parts.push('判断接话');
-    $card.find('.group-card-summary').text(parts.join(' · '));
-  }
-  function toggleGroupCard($card, open){
-    var $body = $card.find('.group-card-body');
-    if (open === undefined) open = !$body.is(':visible');
-    $body.toggle(open);
-    $card.find('.btn-group-toggle i').attr('class', open ? 'bi bi-chevron-down' : 'bi bi-chevron-right');
-  }
-  function fillDatalist(sel, items){
-    var $dl = $(sel).empty();
-    (items || []).forEach(function(v){ $('<option>').attr('value', v).appendTo($dl); });
-  }
-  function loadGroupCandidates(){
-    $.getJSON('/group_candidates').done(function(res){
-      if (res.status !== 'success') return;
-      groupCandidates = res;
-      fillDatalist('#wx-group-datalist', res.groups);
-      if (res.wechat_groups_time) $('#wechat-groups-status').text('上次从微信读取：' + res.wechat_groups_time);
-    });
-  }
-  (function initGroupCards(){
-    var cfg = window.__GROUP_CFG__ || {};
-    var $c = $('#group_container').empty();
-    (cfg.group || []).forEach(function(g){
-      $c.append(buildGroupCard(g, {
-        prompt: (cfg.group_prompt_map || {})[g],
-        api: (cfg.group_api_map || {})[g],
-        decide: (cfg.group_ai_decide || []).indexOf(g) !== -1,
-        senders: (cfg.group_sender_prompt_map || {})[g],
-        always: (cfg.group_sender_always_reply || {})[g]
-      }));
-    });
-    loadGroupCandidates();
-  })();
   $('#btn-add-group-item').click(function(){
-    var $card = buildGroupCard('', {});
-    $('#group_container').append($card);
-    toggleGroupCard($card, true);
-    $card.find('input[name="group"]').focus();
-  });
-  $(document).on('click', '#group_container .btn-group-toggle', function(){
-    toggleGroupCard($(this).closest('.group-card'));
-  });
-  $(document).on('click', '#group_container .btn-add-gsp', function(){
-    var $row = buildGsdRow('', '');
-    $(this).closest('.group-card').find('.gsp-list').append($row);
-    $row.find('.gsp-sender').focus();
-  });
-  // 发言人下拉：聚焦时换成这个群记忆里的发言人
-  $(document).on('focus', '#group_container .gsp-sender', function(){
-    var g = $(this).closest('.group-card').find('input[name="group"]').val().trim();
-    fillDatalist('#wx-member-datalist', (groupCandidates.members || {})[g] || []);
-  });
-  $(document).on('input change', '#group_container input, #group_container select', function(){
-    updateGroupCardSummary($(this).closest('.group-card'));
-  });
-  $(document).on('click', '#group_container .gsp-row .btn-remove-item', function(){
-    var $card = $(this).closest('.group-card');
-    setTimeout(function(){ updateGroupCardSummary($card); }, 0);
-  });
-  $('#btn-refresh-wechat-groups').click(function(){
-    var $btn = $(this).prop('disabled', true);
-    $('#wechat-groups-status').text('正在从微信读取，可能需要几十秒…');
-    $.ajax({url:'/wechat_groups/refresh', type:'POST', dataType:'json'})
-      .done(function(res){
-        if (res.status === 'success') {
-          $('#wechat-groups-status').text('已读取 ' + res.groups.length + ' 个群（' + res.time + '），群名输入框可下拉选择');
-          loadGroupCandidates();
-        } else {
-          $('#wechat-groups-status').text('');
-          svModal.alert(res.message || '读取失败', '读取微信群列表失败');
-        }
-      })
-      .fail(function(){
-        $('#wechat-groups-status').text('');
-        svModal.alert('请求失败，请稍后再试', '读取微信群列表失败');
-      })
-      .always(function(){ $btn.prop('disabled', false); });
+    $('#group_container').append(
+      '<div class="list-item" style="flex-wrap:wrap;gap:6px;">'+
+        '<input type="text" class="form-control" name="group" placeholder="群聊名称">'+
+        '<select class="form-select group-prompt-select" style="width:145px;flex-shrink:0;" title="该群专属Prompt（空=使用全局Prompt）">'+
+          buildPromptOpts('')+
+        '</select>'+
+        '<select class="form-select group-api-select" style="width:160px;flex-shrink:0;" title="该群调用的AI接口（选默认则跟随全局配置）">'+
+          buildGroupApiOpts(-1)+
+        '</select>'+
+        '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
+      '</div>'
+    );
   });
 
   // ===== Sidebar Tab Switch =====
@@ -858,7 +737,7 @@ $(function(){
   refreshApiReferenceDropdowns();
   refreshApiFallbackOptions();
   function refreshAllPromptDropdowns() {
-    ['#default_prompt_select', '.chat-prompt-select', '.group-prompt-select', '.group-sender-prompt-select'].forEach(function(sel){
+    ['#default_prompt_select', '.chat-prompt-select', '.group-prompt-select'].forEach(function(sel){
       $(sel).each(function(){
         var cur = $(this).val() || '';
         $(this).html(sel==='#default_prompt_select'
@@ -1540,7 +1419,6 @@ $(function(){
       group_listen_only:$('#group_listen_only').is(':checked'),
       group_reply_at:$('#group_reply_at').is(':checked'),
       group_reply_at_msg:$('#group_reply_at_msg').is(':checked'),
-      group_link_reply:$('#group_link_reply').is(':checked'),
       group_reply_quote:$('#group_reply_quote').is(':checked'),
       group_welcome:$('#group_welcome').is(':checked'),
       new_friend_switch:$('#new_friend_switch').is(':checked'),
@@ -1561,7 +1439,7 @@ $(function(){
       admin:$('#admin').val(),
       group_welcome_msg:$('#group_welcome_msg').summernote('code'),
       default_prompt:$('#default_prompt_select').val()||'默认',
-      listen_list:[], special_session_name:[], group:[], group_ai_decide:[], group_api_map:{}, group_prompt_map:{}, group_sender_prompt_map:{}, group_sender_always_reply:{}, new_friend_msg:[],
+      listen_list:[], special_session_name:[], group:[], group_api_map:{}, group_prompt_map:{}, new_friend_msg:[],
       chat_prompt_map:{}, chat_api_map:{}, chat_max_round_map:{},
       group_welcome_random:parseFloat($('#group_welcome_random').val()),
       keyword_dict:{},
@@ -1582,22 +1460,16 @@ $(function(){
       memory_switch:$('#memory_switch').is(':checked'),
       memory_max_count:parseInt($('#memory_max_count').val())||3000,
       memory_context_count:parseInt($('#memory_context_count').val())||1000,
-      group_context_by_sender:$('#group_context_by_sender').is(':checked'),
-      group_context_recent_count:(function(v){return isNaN(v)?15:Math.max(0,Math.min(500,v));})(parseInt($('#group_context_recent_count').val())),
-      group_context_sender_count:(function(v){return isNaN(v)?30:Math.max(0,Math.min(500,v));})(parseInt($('#group_context_sender_count').val())),
       reply_delay_switch:$('#reply_delay_switch').is(':checked'),
       reply_delay_min:Math.max(1,parseInt($('#reply_delay_min').val())||1),
       reply_delay_max:Math.max(1,parseInt($('#reply_delay_max').val())||5),
       chat_image_recognition_switch:$('#chat_image_recognition_switch').is(':checked'),
-      channels_video_switch:$('#channels_video_switch').is(':checked'),
-      wx_channel_api:$('#wx_channel_api').val(),
       chat_image_recognition_api:parseInt($('#chat_image_recognition_api').val())||0,
       group_image_recognition_switch:$('#group_image_recognition_switch').is(':checked'),
       group_image_recognition_api:parseInt($('#group_image_recognition_api').val())||0,
       api_error_reply:$('#api_error_reply').val().trim()||'在忙，我稍后回复您',
       api_error_reply_once:$('#api_error_reply_once').is(':checked'),
       clean_ai_reply_switch:$('#clean_ai_reply_switch').is(':checked'),
-      api_chat_meta_headers:$('#api_chat_meta_headers').is(':checked'),
       chat_max_round_switch:$('#chat_max_round_switch').is(':checked'),
       chat_max_round_default:Math.max(1,Math.min(99999,parseInt($('#chat_max_round_default').val())||99)),
       chat_max_round_reset_days:Math.max(0,Math.min(365,parseInt($('#chat_max_round_reset_days').val())||0)),
@@ -1640,42 +1512,15 @@ $(function(){
       }
     });
     // --- ⑤ 群组列表 + 专属接口 / Prompt 映射 ---
-    $('#group_container .group-card').each(function(){
-      var $card=$(this);
-      var name=$card.find('input[name="group"]').val().trim();
-      if(!name || configData.group.indexOf(name)!==-1) return;
+    $('#group_container .list-item').each(function(){
+      var name=$(this).find('input[name="group"]').val().trim();
+      if(!name) return;
       configData.group.push(name);
-      var idx=parseInt($card.find('.group-api-select').val());
+      var idx=parseInt($(this).find('.group-api-select').val());
       if(!isNaN(idx) && idx>=0){ configData.group_api_map[name]=idx; }
-      var gpv=$card.find('.group-prompt-select').val();
+      var gpv=$(this).find('.group-prompt-select').val();
       if(gpv){ configData.group_prompt_map[name]=gpv; }
-      if($card.find('.group-ai-decide-check').is(':checked')){ configData.group_ai_decide.push(name); }
-      // 发言人专属 Prompt：{群名: {发言人: prompt}}
-      $card.find('.gsp-row').each(function(){
-        var sdr=$(this).find('.gsp-sender').val().trim();
-        var p=$(this).find('.group-sender-prompt-select').val();
-        if(!sdr) return;
-        if(p){ (configData.group_sender_prompt_map[name] = configData.group_sender_prompt_map[name] || {})[sdr]=p; }
-        if($(this).find('.gsp-always').is(':checked')){
-          var arr = configData.group_sender_always_reply[name] = configData.group_sender_always_reply[name] || [];
-          if(arr.indexOf(sdr) === -1) arr.push(sdr);
-        }
-      });
     });
-    // 不在监听列表里的群（如被 /删除群 移出）没有卡片：原样保留它们的发言人 Prompt，重新加回来时还在
-    (function(){
-      var cfg = window.__GROUP_CFG__ || {}, listed = cfg.group || [];
-      $.each(cfg.group_sender_prompt_map || {}, function(g, senders){
-        if (listed.indexOf(g) === -1 && !configData.group_sender_prompt_map[g]) {
-          configData.group_sender_prompt_map[g] = senders;
-        }
-      });
-      $.each(cfg.group_sender_always_reply || {}, function(g, senders){
-        if (listed.indexOf(g) === -1 && !configData.group_sender_always_reply[g]) {
-          configData.group_sender_always_reply[g] = senders;
-        }
-      });
-    })();
     // --- ⑥ 新好友招呼消息 + 关键词字典 ---
     $('[name="new_friend_msg"]').each(function(){ if($(this).val()) configData.new_friend_msg.push($(this).val()); });
     var keys=$('input[name="keyword_key"]'), vals=$('textarea[name="keyword_value"]');
