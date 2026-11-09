@@ -52,7 +52,6 @@ import base64
 import mimetypes
 import schedule                  # 定时任务库（此处只用 CancelJob 标记；调度器按实例创建）
 from openai import OpenAI        # OpenAI SDK
-from openai import APIConnectionError as _OpenAIConnectionError   # 含 APITimeoutError（其子类）
 
 # Coze 官方 Python 库
 from cozepy import (
@@ -226,11 +225,6 @@ API_ERROR_REPLY    = "API返回错误，请稍后再试"
 # ============================================================
 MEDIA_CARRIER_TEXT = "1"
 
-# 群聊里算作「分享卡片」的消息类型（见 group_link_reply）。wxautox4 里小程序卡片
-# 可能被识别为 link 或 other，content 只有卡片上能看到的标题、描述和来源，拿不到 URL；
-# 位置消息（location）的 content 是地点名和地址，可用来查「附近有什么」。
-GROUP_CARD_MSG_TYPES = ('link', 'miniapp', 'other', 'location')
-
 # ============================================================
 # 消息类发送：可自动作为「文件」发送的扩展名
 # ------------------------------------------------------------
@@ -357,18 +351,6 @@ SPLIT_PROMPT_TEMPLATE = """\
 # ============================================================
 THINK_BLOCK_RE = re.compile(r'<think\b[^>]*>.*?</think>', re.IGNORECASE | re.DOTALL)
 LEADING_THINK_RE = re.compile(r'^\s*<think\b[^>]*>', re.IGNORECASE)
-# 记忆历史里的时间前缀格式（如 "[2026/10/23 21:04:31]"），模型有时会模仿着放在回复开头
-LEADING_TIMESTAMP_RE = re.compile(
-    r'^[ \t]*[\[【]\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?[\]】][ \t]*',
-    re.MULTILINE,
-)
-
-
-def strip_leading_timestamps(text):
-    """去掉回复里每行开头模仿记忆格式的时间戳。"""
-    if not text:
-        return text
-    return LEADING_TIMESTAMP_RE.sub("", str(text))
 
 
 # ============================================================
@@ -388,7 +370,7 @@ AI_IMAGE_DOWNLOAD_DIR = os.path.join(tempfile.gettempdir(), 'wxbot_ai_images')
 AI_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
 
-# AI 回复是这个标记时什么都不发（自建网关在「AI 判断接话」的群里判断不接话时返回它）
+# AI 回复是这个标记时什么都不发（自建网关判断这条消息不用回时返回它）
 AI_NO_REPLY_MARK = '<NO_REPLY>'
 
 # 机器人停止时放弃了进行中的 AI 请求（只在内部流转，见 WXBot._run_ai_call_until_stop）
@@ -396,8 +378,8 @@ _AI_CALL_ABANDONED = object()
 
 
 def is_ai_no_reply(reply):
-    """AI 回复是否是「不回复」标记（容忍前后空白和时间戳前缀）。"""
-    return isinstance(reply, str) and strip_leading_timestamps(reply).strip() == AI_NO_REPLY_MARK
+    """AI 回复是否是「不回复」标记（容忍前后空白）。"""
+    return isinstance(reply, str) and reply.strip() == AI_NO_REPLY_MARK
 
 
 def _download_ai_reply_image(url):
@@ -449,38 +431,6 @@ def extract_ai_reply_images(text, allowed_dirs):
     cleaned = AI_IMAGE_MARKER_RE.sub('', text)
     cleaned = re.sub(r'\n\s*\n+', '\n', cleaned).strip()
     return cleaned, images
-
-
-def select_group_context(history, sender, recent_count, sender_count):
-    """群聊精简上下文：群里最近 recent_count 条 + 更早记录中与 sender 相关的最近 sender_count 条。
-
-    "与 sender 相关"指 sender 自己的发言，以及机器人回他的话。机器人消息（attr == 'self'）
-    没记录回复对象，按两条规则归属：内容以 "@sender" 开头，或紧挨着的上一条非机器人消息
-    就是 sender 发的。返回值保持原有时间顺序。
-    """
-    history = list(history or [])
-    recent_count = max(0, int(recent_count))
-    sender_count = max(0, int(sender_count))
-    split = max(0, len(history) - recent_count)
-    older, recent = history[:split], history[split:]
-
-    personal = []
-    last_friend_sender = None
-    for h in older:
-        h_sender = h.get('sender', '')
-        if h.get('attr') == 'self':
-            content = str(h.get('content', ''))
-            if sender and (content.startswith('@' + sender) or last_friend_sender == sender):
-                personal.append(h)
-        else:
-            last_friend_sender = h_sender
-            if sender and h_sender == sender:
-                personal.append(h)
-    if sender_count:
-        personal = personal[-sender_count:]
-    else:
-        personal = []
-    return personal + recent
 
 
 def clean_ai_reply_text(text):
@@ -624,8 +574,6 @@ class WXBotConfig:
         self.group_switch = False       # 群机器人总开关
         self.group_listen_only = False   # 群聊只监听不 AI 回复
         self.group_reply_at = False     # 群聊是否仅在被 @ 时才回复
-        self.group_link_reply = False   # 仅@时回复模式下，分享卡片（链接/小程序/位置）不 @ 也交给 AI
-        self.group_ai_decide = []       # 「AI 判断接话」的群：每条消息都交给 AI，由接口决定接不接
         self.group_welcome = False      # 群新人欢迎语开关
         self.group_welcome_random = 1.0 # 群新人欢迎语触发概率（0.0~1.0）
         self.group_welcome_msg = "欢迎新朋友！请先查看群公告！"
@@ -665,8 +613,6 @@ class WXBotConfig:
         self.chat_api_map     = {}          # 私聊白名单用户 -> API 接口索引
         self.chat_max_round_map = {}        # 私聊白名单用户 -> 专属回复轮数上限
         self.group_prompt_map = {}          # 群组名称 -> prompt 名称
-        self.group_sender_prompt_map = {}   # 群组名称 -> {群内显示名 -> prompt 名称}
-        self.group_sender_always_reply = {}  # 群组名称 -> [群内显示名]：这些人每句都回，等同被 @
 
         # ---------- 定时消息配置 ----------
         self.scheduled_msg_switch = False    # 定时消息总开关
@@ -693,9 +639,6 @@ class WXBotConfig:
         self.memory_switch        = True      # 记忆开关（默认开启）
         self.memory_max_count     = 3000     # 单窗口最多存储条数（上限 5000）
         self.memory_context_count = 1000     # AI 请求时带入条数
-        self.group_context_by_sender    = False  # 群聊精简上下文：最近群聊 + 发言人个人记录
-        self.group_context_recent_count = 15     # 群里最近带入条数
-        self.group_context_sender_count = 30     # 发言人个人记录带入条数
 
         # ---------- 发送延迟配置 ----------
         self.reply_delay_switch = True  # 模拟人工操作延迟开关（默认开启）
@@ -954,8 +897,6 @@ class WXBotConfig:
         self.group_listen_only    = bool(self.config.get('group_listen_only', False))
         self.group_reply_at       = self.config.get('group_reply_at')
         self.group_reply_at_msg   = bool(self.config.get('group_reply_at_msg', True))
-        self.group_link_reply     = bool(self.config.get('group_link_reply', False))
-        self.group_ai_decide      = list(self.config.get('group_ai_decide', []) or [])
         self.group_reply_quote    = bool(self.config.get('group_reply_quote', False))
         self.group_welcome        = self.config.get('group_welcome')
         self.group_welcome_random = self.config.get('group_welcome_random')
@@ -1039,9 +980,6 @@ class WXBotConfig:
         self.memory_switch        = self.config.get('memory_switch', True)
         self.memory_max_count     = self._coerce_int_range(self.config.get('memory_max_count'), 3000, 1, 99999)
         self.memory_context_count = self._coerce_int_range(self.config.get('memory_context_count'), 1000, 1, 99999)
-        self.group_context_by_sender    = bool(self.config.get('group_context_by_sender', False))
-        self.group_context_recent_count = self._coerce_int_range(self.config.get('group_context_recent_count'), 15, 0, 500)
-        self.group_context_sender_count = self._coerce_int_range(self.config.get('group_context_sender_count'), 30, 0, 500)
 
         # --- 发送延迟配置（缺键已由上面的 apply_defaults 统一补齐）---
         self.reply_delay_switch = bool(self.config.get('reply_delay_switch', True))
@@ -1083,8 +1021,6 @@ class WXBotConfig:
             self.config.get('chat_max_round_map', {})
         )
         self.group_prompt_map = self.config.get('group_prompt_map', {})
-        self.group_sender_prompt_map = self.config.get('group_sender_prompt_map', {})
-        self.group_sender_always_reply = self.config.get('group_sender_always_reply', {})
         self.init_prompt_dir()
 
         # --- 接口调用失败时的固定回复 ---
@@ -1500,12 +1436,11 @@ class _MergedMessage:
     @，不会"引用失败就降级"。
     """
 
-    def __init__(self, content, sender, msg_type, merged_image, last_msg, multi_sender=False):
+    def __init__(self, content, sender, msg_type, merged_image, last_msg):
         self.content      = content
         self.sender       = sender
         self.type         = msg_type
         self.merged_image = merged_image
-        self.multi_sender = multi_sender   # True：content 已逐行带「发言人: 」，不要再整体加前缀
         # 用 __dict__ 存，避免 __getattr__ 在属性缺失时递归
         self.__dict__['_last_msg'] = last_msg
 
@@ -1557,9 +1492,8 @@ class OpenAIAPI:
         self.client = OpenAI(
             api_key=config.api_key,
             base_url=config.base_url,
-            timeout=180.0,  # 设置超时时间（上游一次可能要 100~140 秒，不能再小）
-            # 只重试 1 次：原来 2 次，单次 180 秒超时 → 最坏 9 分钟，期间这条消息一直占着线程
-            max_retries=1,
+            timeout=180.0,  # 设置超时时间
+            max_retries=2,  # 设置重试次数
             default_headers={
                 "User-Agent": "Mozilla/5.0",
                 "Accept": "*/*"
@@ -1601,10 +1535,7 @@ class OpenAIAPI:
             t = h.get('time', '')
             raw = h.get('content', '')
             sender = h.get('sender', '')
-            if role == 'assistant':
-                # 助手历史不带时间前缀：带了模型会模仿，把 "[2026/10/23 21:04:31]" 也发给用户
-                content = raw
-            elif sender:
+            if role == 'user' and sender:
                 content = f"[{t}] {sender}: {raw}" if t else f"{sender}: {raw}"
             else:
                 content = f"[{t}] {raw}" if t else raw
@@ -1636,7 +1567,7 @@ class OpenAIAPI:
         :param history: 历史消息列表（MemoryManager.get_messages 返回值）
         :param image_path: 本地图片路径，优先于 image_url
         :param image_url:  图片 URL，image_path 为空时使用
-        :param chat_meta:  会话元信息 {chat, chat_type, sender}，以 X-WX-* 请求头发出，供自建网关使用
+        :param chat_meta:  会话元信息 {chat, chat_type, sender, mentioned}，以 X-WX-* 请求头发出，供自建网关使用
         :return:        AI 回复的文本字符串
         """
         if model is None:
@@ -1667,10 +1598,6 @@ class OpenAIAPI:
             error_msg = str(e)
             error_type = type(e).__name__
             log(level="WARN", message=f"Chat Completions API 调用失败 [{error_type}]: {error_msg}")
-            if isinstance(e, _OpenAIConnectionError):
-                # 连不上 / 超时：备用方案打的是同一个地址，只会再白等一轮，直接判失败
-                log(level="WARN", message="连接失败或超时，不再尝试备用方案（同一地址）")
-                return API_ERROR_REPLY
             log(level="INFO", message="尝试备用方案（Responses API）")
             return self._try_responses_api(message, model, stream, prompt, history, image_path, image_url, chat_meta=chat_meta)
 
@@ -1976,7 +1903,7 @@ class CozeAPI:
                 raw = h.get('content', '')
                 sender = h.get('sender', '')
                 if h.get('attr') == 'self':
-                    content = raw   # 助手历史不带时间前缀，避免模型模仿
+                    content = f"[{t}] {raw}" if t else raw
                     try:
                         additional_messages.append(CozeMessage.build_assistant_answer(content))
                     except Exception:
@@ -2509,8 +2436,6 @@ class WXBot:
         # ⚠ flush 只在主循环线程里做（_check_merge_buffers），绝不新开线程碰 wxautox。
         self._merge_buffers = {}
         self._merge_lock    = threading.Lock()
-        # 面板发来的界面读取请求（如读取微信群列表），只在主循环线程里执行，原因同合并回复
-        self._ui_requests   = queue.Queue()
 
         # 私聊回复轮数计数器
         _base = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.abspath(".")
@@ -2644,10 +2569,9 @@ class WXBot:
                 ):
                     attempts.append((fallback_index, None))
 
-        # 会话元信息（群名/发言人）只在开关打开时、且只交给 OpenAI 兼容接口；
-        # 「AI 判断接话」的群（带 mentioned）总是附带，网关靠它判断要不要接话
+        # 会话元信息（群名/发言人/是否被 @）只在开关打开时、且只交给 OpenAI 兼容接口
         chat_meta = kwargs.pop('chat_meta', None)
-        if not getattr(self.config, 'api_chat_meta_headers', False) and not (chat_meta or {}).get('mentioned'):
+        if not getattr(self.config, 'api_chat_meta_headers', False):
             chat_meta = None
 
         for attempt_number, (index, current_api) in enumerate(attempts):
@@ -3677,30 +3601,22 @@ class WXBot:
             return False
         # 群聊"仅被 @ 时才回复"：没 @ 的消息本来就不会走 AI，缓冲了也只会被丢掉
         if (chat.who in self.config.group and self.config.group_reply_at
-                and chat.who not in self.config.group_ai_decide
-                and self.config.AtMe not in msg.content
-                and not self._is_always_reply_sender(chat.who, msg.sender)):
+                and self.config.AtMe not in msg.content):
             return False
         return True
 
     def _buffer_message(self, chat, msg):
         """把一条消息放进合并缓冲；到期或达到条数上限由主循环统一处理。"""
-        content = str(msg.content)
-        # 群聊里没 @ 的闲聊：窗口内所有人的话合成一条，只回一次；
-        # @ 机器人和「每句都回」的发言人仍按发言人单独缓冲、单独回复
-        group_wide = (chat.who in self.config.group
-                      and not (self.config.AtMe and self.config.AtMe in content)
-                      and not self._is_always_reply_sender(chat.who, msg.sender))
-        key     = (chat.who, None) if group_wide else (chat.who, msg.sender)
+        key     = (chat.who, msg.sender)    # 群聊按发送人分开，A、B 不能混在一起
         now     = time.monotonic()
         window  = self.config.merge_reply_window
+        content = str(msg.content)
         with self._merge_lock:
             entry = self._merge_buffers.get(key)
             if entry is None:
                 entry = {
                     'chat':        chat,
                     'texts':       [],
-                    'senders':     [],
                     'types':       [],
                     'image_paths': [],
                     'last_msg':    msg,
@@ -3710,19 +3626,16 @@ class WXBot:
                 }
                 self._merge_buffers[key] = entry
             entry['texts'].append(content)
-            entry['senders'].append(msg.sender)
             entry['types'].append(str(msg.type))
             if msg.type == 'image' and content:
                 entry['image_paths'].append(content)
             entry['last_msg']    = msg        # 只用于 quote()，见 _MergedMessage
             entry['last_sender'] = msg.sender
             entry['deadline']    = now + window   # 窗口内有新消息 → 刷新计时
-            if self.config.AtMe and self.config.AtMe in content:
-                entry['deadline'] = now           # 被 @ → 不等窗口，连同之前缓冲的下一轮立即回复
             entry['count']      += 1
             count = entry['count']
         log(message=(
-            f"[合并回复] {chat.who} / {'全群' if group_wide else msg.sender}（{msg.sender}）第 {count} 条进入缓冲"
+            f"[合并回复] {chat.who} / {msg.sender} 第 {count} 条进入缓冲"
             f"（窗口 {window} 秒，满 {self.config.merge_reply_max_count} 条立即回复）"
         ))
 
@@ -3732,61 +3645,6 @@ class WXBot:
             count = len(self._merge_buffers)
             self._merge_buffers.clear()
         return count
-
-    # ----------------------------------------------------------
-    # 面板 → 主循环的界面读取请求
-    # 面板线程不能直接操作微信界面（会和监听/发送并发，且没 CoInitialize），
-    # 所以把请求放进队列，由主循环每轮取出执行，面板线程等结果。
-    # ----------------------------------------------------------
-
-    def request_recent_groups(self, timeout=90):
-        """（面板线程调用）请主循环读取微信最近群聊列表，返回群名列表。"""
-        box, done = {}, threading.Event()
-        self._ui_requests.put(('recent_groups', box, done))
-        if not done.wait(timeout):
-            raise TimeoutError('读取超时：机器人主循环没有响应')
-        if 'error' in box:
-            raise RuntimeError(box['error'])
-        return box.get('result', [])
-
-    @staticmethod
-    def _normalize_group_names(raw):
-        """兼容 GetAllRecentGroups 的几种返回形式：字符串列表、(群名, 人数) 元组列表、带 name 属性的对象。"""
-        if not isinstance(raw, (list, tuple)):
-            raise RuntimeError(f'微信返回了无法识别的结果：{raw}')
-        names = []
-        for item in raw:
-            if isinstance(item, (list, tuple)):
-                item = item[0] if item else ''
-            elif not isinstance(item, str):
-                item = getattr(item, 'name', '') or ''
-            name = str(item).strip()
-            if name and name not in names:
-                names.append(name)
-        return names
-
-    def _run_ui_requests(self):
-        """主循环每轮调用：执行面板排队的界面读取请求。"""
-        while True:
-            try:
-                kind, box, done = self._ui_requests.get_nowait()
-            except queue.Empty:
-                return
-            try:
-                if kind == 'recent_groups':
-                    fn = getattr(self.wx, 'GetAllRecentGroups', None)
-                    if fn is None:
-                        box['error'] = '当前 wxautox4 版本不支持读取群列表（没有 GetAllRecentGroups）'
-                    else:
-                        box['result'] = self._normalize_group_names(fn())
-                        log(message=f"已读取微信群列表：{len(box['result'])} 个")
-                else:
-                    box['error'] = f'未知请求：{kind}'
-            except Exception as e:
-                box['error'] = f'读取失败：{e}'
-                log(level="WARNING", message=f"面板请求 {kind} 执行失败：{e}")
-            finally:
-                done.set()
 
     def _check_merge_buffers(self):
         """主循环每轮调用：把到期或达到条数上限的缓冲合并回复。
@@ -3823,21 +3681,13 @@ class WXBot:
         texts       = entry['texts']
         types       = entry['types']
         image_paths = entry['image_paths']
-        senders     = entry['senders']
         image_path  = image_paths[-1] if image_paths else ''   # 接口只收一张，取最后一张
-        multi       = len(set(senders)) > 1
-        if multi:
-            # 多人合并：逐行标上发言人，AI 才分得清谁说了什么
-            content = "\n".join(f"{s}: {t}" for s, t in zip(senders, texts))
-        else:
-            content = "\n".join(texts)
         merged = _MergedMessage(
-            content      = content,
+            content      = "\n".join(texts),
             sender       = entry['last_sender'],
             msg_type     = 'image' if image_path else 'text',
             merged_image = image_path,
             last_msg     = entry['last_msg'],
-            multi_sender = multi,
         )
         log(message=(
             f"[合并回复] {chat.who} / {entry['last_sender']} 合并 {len(texts)} 条"
@@ -3847,11 +3697,11 @@ class WXBot:
         # 逐条补写记忆：必须在 process_message 之后 —— 先写会让 AI 读历史时
         # 当前消息已经在里面，同一条消息进 AI 两次（全局模式踩过这个坑）。
         if self.config.memory_switch and self.memory_manager:
-            for text, msg_type, sender in zip(texts, types, senders):
+            for text, msg_type in zip(texts, types):
                 try:
                     self.memory_manager.save_message(
                         chat_name  = chat.who,
-                        sender     = sender,
+                        sender     = entry['last_sender'],
                         content    = text,
                         msg_type   = msg_type,
                         msg_attr   = 'friend',
@@ -4101,16 +3951,9 @@ class WXBot:
                             time.sleep(1)
                             return result
 
-            # 分享卡片（大众点评、高德等）和位置消息本身带不了 @，开了 group_link_reply 时同样交给 AI，
-            # 由群绑定的接口（例如自建网关里的美食助手）决定怎么处理
-            _is_shared_card = self.config.group_link_reply and message.type in GROUP_CARD_MSG_TYPES
-            # 「AI 判断接话」的群每条都交给 AI，由接口（自建网关）决定接不接
-            _ai_decide = chat.who in self.config.group_ai_decide
-            # 「每句都回」的发言人等同被 @：不受仅@回复限制，判断接话的群也直接回答
-            _mentioned = self.config.AtMe in message.content \
-                or self._is_always_reply_sender(chat.who, message.sender)
+            _mentioned = self.config.AtMe in message.content
             if (_mentioned and self.config.group_reply_at) \
-                    or not self.config.group_reply_at or _is_shared_card or _ai_decide:
+                    or not self.config.group_reply_at:
                 if self.config.group_listen_only:
                     log(message=f"群组 {chat.who} 已启用只监听不AI回复，跳过 AI 调用")
                     return result
@@ -4118,27 +3961,15 @@ class WXBot:
                 content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
                 log(message=f"群组 {chat.who} 消息：" + content_without_at)
                 # 拼接发送人前缀，与历史消息格式保持一致
-                if getattr(message, 'multi_sender', False):
-                    content_with_sender = content_without_at   # 多人合并，每行已带发言人
-                else:
-                    content_with_sender = f"{message.sender}: {content_without_at}"
+                content_with_sender = f"{message.sender}: {content_without_at}"
                 try:
                     history = []
                     if self.config.memory_switch and self.memory_manager:
-                        if self.config.group_context_by_sender:
-                            # 精简上下文：群里最近 N 条 + 该发言人（及机器人回他）的更早 M 条
-                            history = select_group_context(
-                                self.memory_manager.get_messages(chat.who, self.config.memory_max_count),
-                                message.sender,
-                                self.config.group_context_recent_count,
-                                self.config.group_context_sender_count,
-                            )
-                        else:
-                            history = self.memory_manager.get_messages(
-                                chat.who, self.config.memory_context_count
-                            )
+                        history = self.memory_manager.get_messages(
+                            chat.who, self.config.memory_context_count
+                        )
                     # 构建有效 prompt（拆分开关开启时注入格式要求）
-                    _base_group_prompt = self._get_group_prompt(chat.who, message.sender)
+                    _base_group_prompt = self._get_group_prompt(chat.who)
                     if self.config.group_split_reply_switch:
                         _effective_group_prompt = self._build_split_prompt(
                             _base_group_prompt,
@@ -4147,16 +3978,16 @@ class WXBot:
                         )
                     else:
                         _effective_group_prompt = _base_group_prompt
-                    _chat_meta = {'chat': chat.who, 'chat_type': 'group', 'sender': message.sender}
-                    if _ai_decide:
-                        _chat_meta['mentioned'] = '1' if _mentioned else '0'
+                    # 群消息总是带上是否被 @，自建网关据此决定回不回（不回时返回 <NO_REPLY>）
+                    _chat_meta = {'chat': chat.who, 'chat_type': 'group', 'sender': message.sender,
+                                  'mentioned': '1' if _mentioned else '0'}
                     if self.config.group_image_recognition_switch:
                         if getattr(message, 'merged_image', ''):
                             # 合并回复带图片：正文用合并后的文字（已去掉 @），图片取最后一张
                             rec_index = self.config.group_image_recognition_api
                             reply = self._call_api_with_fallback(
                                 rec_index,
-                                content_with_sender,
+                                f"{message.sender}: {content_without_at}",
                                 prompt=_effective_group_prompt,
                                 chat_meta=_chat_meta,
                                 history=history,
@@ -4215,12 +4046,10 @@ class WXBot:
                 if is_ai_no_reply(reply):
                     log(message=f"群组 {chat.who} AI 选择不回复")
                     return result
-                if _ai_decide and not _mentioned and reply == "API返回错误，请稍后再试":
-                    # 没 @ 的消息是 AI 主动判断，接口出错就不说话，否则接口一挂每句话都刷一条兜底
-                    log(level="WARNING", message=f"群组 {chat.who} 判断接话时接口失败，不发兜底回复")
-                    return result
-                if _ai_decide and not strip_leading_timestamps(reply or '').strip():
-                    log(message=f"群组 {chat.who} AI 回复为空，不发送")
+                if (self.config.api_chat_meta_headers and not _mentioned
+                        and reply == "API返回错误，请稍后再试"):
+                    # 没 @ 的消息由网关判断回不回，接口出错就不说话，否则接口一挂每句话都刷一条兜底
+                    log(level="WARNING", message=f"群组 {chat.who} 没被 @ 且接口失败，不发兜底回复")
                     return result
 
                 # 接口调用失败时替换为配置的固定回复
@@ -4339,28 +4168,10 @@ class WXBot:
             name = self.config.default_prompt
         return self.config.get_prompt_content(name)
 
-    def _is_always_reply_sender(self, group_name, sender):
-        """该发言人在这个群里是否勾了「每句都回」。"""
-        senders = (self.config.group_sender_always_reply or {}).get(group_name) or []
-        return bool(sender) and sender in senders
-
-    def _get_group_prompt(self, group_name, sender=None):
-        """获取群组对应的 prompt 内容。
-
-        基础是群 prompt（group_prompt_map[群]，未配置则 default_prompt）；
-        若 group_sender_prompt_map[群][发言人] 有配置，把它作为"当前发言人的专属设定"接在后面（叠加，不替换）。
-        发言人按群里显示的名字匹配（好友备注或群昵称），wxautox4 拿不到微信 ID。
-        """
-        base_name = self.config.group_prompt_map.get(group_name) or self.config.default_prompt
-        base = self.config.get_prompt_content(base_name)
-        sender_map = (self.config.group_sender_prompt_map or {}).get(group_name) or {}
-        sender_name = sender and sender_map.get(sender)
-        if not sender_name or sender_name == base_name:
-            return base
-        extra = self.config.get_prompt_content(sender_name)
-        if not extra or extra == base:
-            return base
-        return f"{base}\n\n【当前发言人「{sender}」的专属设定】\n{extra}" if base else extra
+    def _get_group_prompt(self, group_name):
+        """获取群组对应的 prompt 内容（查 group_prompt_map，未配置则用 default_prompt）"""
+        name = self.config.group_prompt_map.get(group_name) or self.config.default_prompt
+        return self.config.get_prompt_content(name)
 
     def _send_group_reply(self, chat, message, content, at_sender=False, quote=False):
         """发送群聊回复；引用失败时降级为普通发送，避免中断监听回调。
@@ -4471,14 +4282,11 @@ class WXBot:
 
     def _parse_split_reply(self, reply, max_count):
         """按 ||SPLIT|| 分隔符解析回复，过滤空白，截断到 max_count 条"""
-        parts = [strip_leading_timestamps(p.strip()).strip() for p in reply.split(SPLIT_SEPARATOR)]
-        parts = [p for p in parts if p]
+        parts = [p.strip() for p in reply.split(SPLIT_SEPARATOR) if p.strip()]
         return parts[:max_count] if parts else [reply]
 
     def _clean_reply_for_send(self, reply):
         """按配置清洗即将发送给用户的 AI 回复。"""
-        # 时间戳前缀不受清洗开关控制，任何情况下都不该发给用户
-        reply = strip_leading_timestamps(reply)
         if not self.config.clean_ai_reply_switch:
             return reply
         cleaned = clean_ai_reply_text(reply)
@@ -6335,9 +6143,6 @@ class WXBot:
 
                     # ---- 多条消息缓冲合并回复（到期/满条数才回复）----
                     self._check_merge_buffers()
-
-                    # ---- 面板发来的界面读取请求（读取微信群列表等）----
-                    self._run_ui_requests()
 
                     # ---- 定时任务执行（定时消息 / 定时朋友圈）----
                     # 只跑本实例调度器里的任务：模块级全局 schedule 是进程级的，

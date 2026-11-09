@@ -49,5 +49,3 @@ cacert.pem
 data/
 wxautox_logs/
 wxauto文件/
-gateway/deploy/mac/secrets.env
-gateway/.op-home/
