@@ -75,3 +75,15 @@ def test_tool_uses_cache_and_formats(monkeypatch, tmp_path):
     assert "怎么做红烧肉" in out and "1分35秒" in out and "先焯水再炒糖色" in out
     video_server.get_channels_video_transcript(video_id="v1")
     assert len(calls) == 1   # 第二次走缓存
+
+
+def test_paired_url_key_takes_latest_log_line(tmp_path):
+    log = tmp_path / "wx_channel.log"
+    log.write_text(
+        "2026/10/26 15:36:22 [视频信息] ID=150408 | 标题=a | b | 作者=阿湍2059 | 大小=10.55MB | URL=https://x/old?token=1 | Key=336065226 | 分辨率=1080p\n"
+        "2026/10/26 15:40:00 [视频信息] ID=999 | 标题=别的 | 作者=x | 大小=1MB | URL=https://y/z | Key=1 | 分辨率=720p\n"
+        "2026/10/26 15:44:19 [视频信息] ID=150408 | 标题=a | 作者=阿湍2059 | 大小=10.55MB | URL=https://x/new?token=2 | Key=1473973678 | 分辨率=1080p\n",
+        encoding="utf-8")
+    assert video_server.paired_url_key("150408", str(log)) == ("https://x/new?token=2", "1473973678")
+    assert video_server.paired_url_key("123", str(log)) is None
+    assert video_server.paired_url_key("150408", str(tmp_path / "missing.log")) is None
