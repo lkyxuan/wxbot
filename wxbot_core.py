@@ -582,6 +582,12 @@ class WXBotConfig:
         self.channels_video_switch = False            # 私聊收到视频号卡片时点开，经 wx_channel 拿到视频信息再交给 AI
         self.wx_channel_api = "http://127.0.0.1:2026" # wx_channel 的 HTTP 接口
 
+        # ---------- 发件箱（自建网关的待发列表）----------
+        self.outbox_switch = False        # 定期去网关取待发消息并发出
+        self.outbox_url = ""              # 网关地址，例如 http://100.123.241.60:8100
+        self.outbox_api_key = ""          # 网关 key；为空时用当前 AI 接口的 key
+        self.outbox_poll_seconds = 5      # 取信间隔（秒）
+
         # ---------- 新好友配置 ----------
         self.new_friend_switch = False        # 自动通过新好友开关
         self.new_friend_reply_switch = False   # 新好友自动回复开关
@@ -992,6 +998,12 @@ class WXBotConfig:
         # --- 视频号卡片 ---
         self.channels_video_switch = bool(self.config.get('channels_video_switch', False))
         self.wx_channel_api = str(self.config.get('wx_channel_api') or 'http://127.0.0.1:2026').strip()
+
+        # --- 发件箱 ---
+        self.outbox_switch = bool(self.config.get('outbox_switch', False))
+        self.outbox_url = str(self.config.get('outbox_url') or '').strip().rstrip('/')
+        self.outbox_api_key = str(self.config.get('outbox_api_key') or '').strip()
+        self.outbox_poll_seconds = self._coerce_int_range(self.config.get('outbox_poll_seconds'), 5, 2, 3600)
 
         # --- 图片识别配置 ---
         self.chat_image_recognition_switch  = bool(self.config.get('chat_image_recognition_switch', False))
@@ -3646,6 +3658,78 @@ class WXBot:
             self._merge_buffers.clear()
         return count
 
+    # ----------------------------------------------------------
+    # 发件箱：自建网关上的程序（汇报、提醒等）想主动发微信时，把消息放进网关的
+    # 待发列表；这里每隔 outbox_poll_seconds 秒去取一次，在主循环线程里发出，
+    # 再把结果告诉网关。Windows 不用开端口，方向和调用 AI 接口一样。
+    # 消息里单独一行的「[图片]链接」按 ai_reply_image_dirs 的规则下载后作为图片发送。
+    # ----------------------------------------------------------
+
+    def _outbox_request(self, method, path, **kwargs):
+        key = self.config.outbox_api_key or self.config.api_key
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        resp = requests.request(method, self.config.outbox_url + path, headers=headers, timeout=10, **kwargs)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _check_outbox(self):
+        """主循环每轮调用：到时间就去网关取待发消息并发出。"""
+        if not self.config.outbox_url:
+            return
+        now = time.monotonic()
+        if now < getattr(self, '_outbox_next_poll', 0):
+            return
+        self._outbox_next_poll = now + self.config.outbox_poll_seconds
+        try:
+            items = self._outbox_request("GET", "/v1/outbox/next", params={"limit": 5}).get("items") or []
+            if getattr(self, '_outbox_failing', False):
+                log(message="[发件箱] 已重新连上网关")
+            self._outbox_failing = False
+        except Exception as e:
+            # 网关不在线时少打日志、放慢频率，恢复后自动继续
+            if not getattr(self, '_outbox_failing', False):
+                log(level="WARNING", message=f"[发件箱] 连不上网关，稍后重试：{e}")
+            self._outbox_failing = True
+            self._outbox_next_poll = now + max(60, self.config.outbox_poll_seconds)
+            return
+        for item in items:
+            if self.stop_requested():
+                break   # 已取走但没发的，网关超时后会记为失败（不会重复发）
+            ok, error = self._send_outbox_item(item)
+            try:
+                self._outbox_request("POST", f"/v1/outbox/{item.get('id')}/result", json={"ok": ok, "error": error})
+            except Exception as e:
+                log(level="WARNING", message=f"[发件箱] 回报结果失败（{item.get('id')}）：{e}")
+
+    def _send_outbox_item(self, item):
+        """发出一条待发消息，返回 (是否成功, 失败原因)。"""
+        who = str(item.get('to') or '').strip()
+        text, images = extract_ai_reply_images(str(item.get('text') or ''), self.config.ai_reply_image_dirs)
+        if not who or (not text and not images and not item.get('at')):
+            return False, '收件人或内容为空'
+        if self.stop_requested():
+            return False, '机器人正在停止，未发送'   # 下载图片期间点了停止
+        log(message=f"[发件箱] 向 {who} 发送：{(text or '[图片]')[:60]}")
+        try:
+            at = [str(a) for a in (item.get('at') or []) if str(a).strip()]
+            if text or at:
+                # at：群里真正 @ 这些人（wxautox 的 SendMsg(at=...)）
+                result = self.wx.SendMsg(msg=text, who=who, at=at) if at else self.wx.SendMsg(msg=text, who=who)
+                if not result:
+                    return False, ReplyCountStore.send_result_message(result)
+            for path in images:
+                self.config.human_delay()
+                if self.stop_requested():
+                    return False, '机器人正在停止，图片未发完'
+                result = self.wx.SendFiles(who=who, filepath=path)
+                if not ReplyCountStore.was_send_success(result, none_is_success=True):
+                    return False, f"图片发送失败：{ReplyCountStore.send_result_message(result)}"
+        except Exception as e:
+            log(level="ERROR", message=f"[发件箱] 向 {who} 发送失败：{e}")
+            return False, str(e)
+        self.config.human_delay()
+        return True, ''
+
     def _check_merge_buffers(self):
         """主循环每轮调用：把到期或达到条数上限的缓冲合并回复。
 
@@ -6143,6 +6227,13 @@ class WXBot:
 
                     # ---- 多条消息缓冲合并回复（到期/满条数才回复）----
                     self._check_merge_buffers()
+
+                    # ---- 发件箱：发出自建网关里排队的消息 ----
+                    if self.config.outbox_switch:
+                        try:
+                            self._check_outbox()
+                        except Exception as e:
+                            log(level="ERROR", message=f"发件箱模块出错：{e}")
 
                     # ---- 定时任务执行（定时消息 / 定时朋友圈）----
                     # 只跑本实例调度器里的任务：模块级全局 schedule 是进程级的，
