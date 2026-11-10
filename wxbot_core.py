@@ -3681,7 +3681,8 @@ class WXBot:
             return
         self._outbox_next_poll = now + self.config.outbox_poll_seconds
         try:
-            items = self._outbox_request("GET", "/v1/outbox/next", params={"limit": 5}).get("items") or []
+            resp = self._outbox_request("GET", "/v1/outbox/next", params={"limit": 5})
+            items = resp.get("items") or []
             if getattr(self, '_outbox_failing', False):
                 log(message="[发件箱] 已重新连上网关")
             self._outbox_failing = False
@@ -3692,6 +3693,10 @@ class WXBot:
             self._outbox_failing = True
             self._outbox_next_poll = now + max(60, self.config.outbox_poll_seconds)
             return
+        # 群总览：启动后第一次、网关页面点了「扫描」时扫一遍微信群；平时每 5 分钟只报监听列表
+        scan = resp.get("scan_groups") or not getattr(self, '_bot_status_scanned', False)
+        if scan or now >= getattr(self, '_bot_status_next', 0):
+            self._report_bot_status(scan)
         for item in items:
             if self.stop_requested():
                 break   # 已取走但没发的，网关超时后会记为失败（不会重复发）
@@ -3701,8 +3706,48 @@ class WXBot:
             except Exception as e:
                 log(level="WARNING", message=f"[发件箱] 回报结果失败（{item.get('id')}）：{e}")
 
+    def _report_bot_status(self, scan):
+        """把监听的群、面板设置（以及扫描到的微信群列表）报给网关的群总览。"""
+        self._bot_status_next = time.monotonic() + 300
+        prompt_map = getattr(self.config, 'group_prompt_map', {}) or {}
+        body = {
+            "group_switch": bool(self.config.group_switch),
+            "group_reply_at": bool(self.config.group_reply_at),
+            "groups": [{"name": g, "prompt": prompt_map.get(g) or ""} for g in (self.config.group or [])],
+        }
+        if scan:
+            self._bot_status_scanned = True
+            try:
+                body["wechat_groups"] = self._normalize_group_names(self.wx.GetAllRecentGroups())
+                log(message=f"[群总览] 从微信读到 {len(body['wechat_groups'])} 个群")
+            except Exception as e:
+                log(level="WARNING", message=f"[群总览] 读取微信群列表失败：{e}")
+                body["scan_error"] = str(e)
+        try:
+            self._outbox_request("POST", "/v1/bot/status", json=body)
+        except Exception as e:
+            log(level="WARNING", message=f"[群总览] 上报网关失败：{e}")
+
+    @staticmethod
+    def _normalize_group_names(raw):
+        """兼容 GetAllRecentGroups 的几种返回：字符串列表、(群名, 人数) 列表、带 name 属性的对象。"""
+        if not isinstance(raw, (list, tuple)):
+            raise RuntimeError(f'微信返回了无法识别的结果：{raw}')
+        names = []
+        for item in raw:
+            if isinstance(item, (list, tuple)):
+                item = item[0] if item else ''
+            elif not isinstance(item, str):
+                item = getattr(item, 'name', '') or ''
+            name = str(item).strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+
     def _send_outbox_item(self, item):
         """发出一条待发消息，返回 (是否成功, 失败原因)。"""
+        if item.get('kind') == 'moments':
+            return self._send_outbox_moment(item)
         who = str(item.get('to') or '').strip()
         text, images = extract_ai_reply_images(str(item.get('text') or ''), self.config.ai_reply_image_dirs)
         if not who or (not text and not images and not item.get('at')):
@@ -3728,6 +3773,39 @@ class WXBot:
             log(level="ERROR", message=f"[发件箱] 向 {who} 发送失败：{e}")
             return False, str(e)
         self.config.human_delay()
+        return True, ''
+
+    def _send_outbox_moment(self, item):
+        """发件箱里的朋友圈：和定时朋友圈一样用 wx.Moments().Publish 发出。"""
+        text, images = extract_ai_reply_images(str(item.get('text') or ''), self.config.ai_reply_image_dirs)
+        if '[图片]' in str(item.get('text') or '') and not images:
+            return False, '图片都没下载成功（检查 ai_reply_image_dirs 是否允许网关的链接）'
+        if not text and not images:
+            return False, '朋友圈内容为空'
+        if self.stop_requested():
+            return False, '机器人正在停止，未发送'
+        privacy = item.get('privacy') or 'public'
+        tags = [str(t) for t in (item.get('tags') or [])]
+        privacy_config = {'privacy': '白名单', 'tags': tags} if privacy == 'whitelist' else \
+            {'privacy': '黑名单', 'tags': tags} if privacy == 'blacklist' else {}
+        log(message=f"[发件箱] 发朋友圈：{(text or '[图片]')[:60]}，图片 {len(images)} 张")
+        pyq = None
+        try:
+            pyq = self.wx.Moments()
+            if pyq is None:
+                return False, '打开朋友圈失败，请确认微信已开启朋友圈功能'
+            time.sleep(random.uniform(2, 5))
+            pyq.Publish(text, images or None, privacy_config)
+            time.sleep(random.uniform(2, 5))
+        except Exception as e:
+            log(level="ERROR", message=f"[发件箱] 发朋友圈失败：{e}")
+            return False, str(e)
+        finally:
+            if pyq is not None:
+                try:
+                    pyq.Close()
+                except Exception as e:
+                    log(level="WARNING", message=f"[发件箱] 关闭朋友圈窗口失败：{e}")
         return True, ''
 
     def _check_merge_buffers(self):
