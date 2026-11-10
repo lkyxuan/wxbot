@@ -3694,6 +3694,10 @@ class WXBot:
             self._outbox_next_poll = now + max(60, self.config.outbox_poll_seconds)
             return
         # 群总览：启动后第一次、网关页面点了「扫描」时扫一遍微信群；平时每 5 分钟只报监听列表
+        changes = resp.get("group_changes") or {}
+        if changes.get("add") or changes.get("remove"):
+            self._apply_group_changes(changes)
+            self._bot_status_next = 0   # 改完马上上报，网关的群总览立刻能看到
         scan = resp.get("scan_groups") or not getattr(self, '_bot_status_scanned', False)
         if scan or now >= getattr(self, '_bot_status_next', 0):
             self._report_bot_status(scan)
@@ -3705,6 +3709,33 @@ class WXBot:
                 self._outbox_request("POST", f"/v1/outbox/{item.get('id')}/result", json={"ok": ok, "error": error})
             except Exception as e:
                 log(level="WARNING", message=f"[发件箱] 回报结果失败（{item.get('id')}）：{e}")
+
+    def _apply_group_changes(self, changes):
+        """网关转来的增减监听群请求（Mac 上的程序调 POST /v1/bot/groups），和 /添加群、/删除群 指令一样处理。"""
+        for name in [str(n).strip() for n in changes.get("remove") or [] if str(n).strip()]:
+            if name not in (self.config.group or []):
+                continue
+            try:
+                self.wx.RemoveListenChat(name)
+            except Exception as e:
+                log(level="WARNING", message=f"[群总览] 移除群 {name} 的监听失败：{e}")
+            self.config.remove_group(name)
+            log(message=f"[群总览] 按网关请求删除监听群：{name}")
+        for name in [str(n).strip() for n in changes.get("add") or [] if str(n).strip()]:
+            if self.stop_requested():
+                return
+            if name in (self.config.group or []):
+                continue
+            self.config.add_group(name)
+            if not self.config.group_switch:
+                log(message=f"[群总览] 已加入监听列表（群聊开关没开，暂不监听）：{name}")
+                continue
+            time.sleep(0.5)
+            if self._add_listen_chat_once(name, "群组"):
+                log(message=f"[群总览] 按网关请求添加监听群：{name}")
+            else:
+                self.config.remove_group(name)   # 注册失败回滚，和 /添加群 一致
+                log(level="ERROR", message=f"[群总览] 添加监听群失败（群名不对或微信里没有）：{name}")
 
     def _report_bot_status(self, scan):
         """把监听的群、面板设置（以及扫描到的微信群列表）报给网关的群总览。"""

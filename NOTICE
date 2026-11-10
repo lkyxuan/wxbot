@@ -20,6 +20,6 @@ v4.8.3（上游提交 a861923）修改，原作者 Siver（SiverKing），Apache
   动态监听子窗口删除失败时直接关闭并推迟重试；
 - wxbot_core.py：发件箱——打开 outbox_switch 后，主循环每隔 outbox_poll_seconds 秒去自建网关
   （outbox_url）取待发消息并发出（支持 @ 和「[图片]链接」，也支持发朋友圈），再回报结果；Windows 不开端口；
-  同时向网关上报监听的群和扫描到的微信群列表（网关的群总览页面用）；
+  同时向网关上报监听的群和扫描到的微信群列表（网关的群总览页面用），并执行网关转来的增减监听群请求；
 - config_defaults.py：上述新配置项的默认值；
 - .gitignore：补充 .env、cacert.pem 等本地运行数据。
