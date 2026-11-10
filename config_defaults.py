@@ -6,7 +6,7 @@
   - web_server.main() 建文件时的 default_config（96 个键）
   - wxbot_core.create_new_config_file() 的 base_config（96 个键，与上一处是两份重复拷贝）
   - web_server.dashboard() 给老配置补键的 76 个 setdefault
-现在三者合并为本文件的 DEFAULT_CONFIG（102 个键），老配置补键由 apply_defaults() 统一完成。
+现在三者合并为本文件的 DEFAULT_CONFIG（106 个键），老配置补键由 apply_defaults() 统一完成。
 
 迁移原则
 --------
@@ -101,6 +101,10 @@ DEFAULT_CONFIG = {
     'ai_reply_image_dirs': [],
     'channels_video_switch': False,
     'wx_channel_api': 'http://127.0.0.1:2026',
+    'outbox_switch': False,
+    'outbox_url': '',
+    'outbox_api_key': '',
+    'outbox_poll_seconds': 5,
     'chat_image_recognition_switch': False,
     'chat_image_recognition_api': 0,
     'group_image_recognition_switch': False,
@@ -202,6 +206,7 @@ def _coerce_bool_fields(merged_config):
         'clean_ai_reply_switch',            # AI 回复清洗开关
         'api_chat_meta_headers',            # 接口请求头附带群名/发言人
         'channels_video_switch',            # 私聊视频号卡片点开读取
+        'outbox_switch',                    # 发件箱：去自建网关取待发消息
         'chat_image_recognition_switch',    # 私聊图片识别开关
         'group_image_recognition_switch',   # 群组图片识别开关
         'custom_forward_switch',            # 自定义转发总开关

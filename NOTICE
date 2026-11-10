@@ -18,5 +18,7 @@ v4.8.3（上游提交 a861923）修改，原作者 Siver（SiverKing），Apache
 - wxbot_core.py + channels_video.py：私聊视频号卡片点开读取（配置 channels_video_switch / wx_channel_api）；
 - wxbot_core.py：停止相关修复——停止时不再等待进行中的 AI 请求、初始化途中停止不残留监听、
   动态监听子窗口删除失败时直接关闭并推迟重试；
+- wxbot_core.py：发件箱——打开 outbox_switch 后，主循环每隔 outbox_poll_seconds 秒去自建网关
+  （outbox_url）取待发消息并发出（支持 @ 和「[图片]链接」），再回报结果；Windows 不开端口；
 - config_defaults.py：上述新配置项的默认值；
 - .gitignore：补充 .env、cacert.pem 等本地运行数据。
