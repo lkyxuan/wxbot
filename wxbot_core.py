@@ -3707,6 +3707,8 @@ class WXBot:
         text, images = extract_ai_reply_images(str(item.get('text') or ''), self.config.ai_reply_image_dirs)
         if not who or (not text and not images and not item.get('at')):
             return False, '收件人或内容为空'
+        if self.stop_requested():
+            return False, '机器人正在停止，未发送'   # 下载图片期间点了停止
         log(message=f"[发件箱] 向 {who} 发送：{(text or '[图片]')[:60]}")
         try:
             at = [str(a) for a in (item.get('at') or []) if str(a).strip()]
@@ -3717,6 +3719,8 @@ class WXBot:
                     return False, ReplyCountStore.send_result_message(result)
             for path in images:
                 self.config.human_delay()
+                if self.stop_requested():
+                    return False, '机器人正在停止，图片未发完'
                 result = self.wx.SendFiles(who=who, filepath=path)
                 if not ReplyCountStore.was_send_success(result, none_is_success=True):
                     return False, f"图片发送失败：{ReplyCountStore.send_result_message(result)}"
